@@ -1,3 +1,11 @@
+.../gcc-reorder/0-README.txt
+
+  https://github.com/mrob27/gcc-reorder
+
+Work notes are in 1-log.txt (not in github)
+
+====
+
 Initial creation of the GCC source:
 
   cd
