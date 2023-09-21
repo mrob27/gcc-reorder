@@ -1,0 +1,22 @@
+#!/usr/bin/env perl
+#
+
+use strict;
+use warnings;
+use Time::HiRes;
+
+sub tm1
+{
+  my($c1, $c2) = @_;
+  my($t1, $t2, $o);
+
+  system($c1);
+  $t1 = [Time::HiRes::gettimeofday()];
+  system($c2);
+  $t2 = Time::HiRes::tv_interval($t1);
+
+  return $t2;
+}
+
+print ("-O1: " . &tm1("gcc -O1 haj-ali-3.c -lm -o ha", "./ha") . "\n");
+print ("-O2: " . &tm1("gcc -O2 haj-ali-3.c -lm -o ha", "./ha") . "\n");
