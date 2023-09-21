@@ -1,0 +1,294 @@
+#!/usr/bin/env perl
+#
+$hd = $ENV{"HOME"};
+
+$g_logfile = "$hd/test1-log.txt";
+$infile1 = "s4-testfun.c";
+$infile2 = "stream4.c";
+$pn_p1 = "$hd/test1-rpt1.txt";
+$pn_p2 = "$hd/test1-def-ord.txt";
+#$ord_file = "$hd/test1-ordering.txt";
+
+$help = qq`
+
+NAME
+
+  test1
+
+DESCRIPTION
+
+This just tries a single compilation with custom-built GCC compiler
+
+It sets the RML1_RPT1_PATH and RML1_RPT2_PATH environment variables
+and compiles the input
+
+  $infile1  $infile2
+
+OPTIONS
+
+  -m        Do a GCC make
+  -s        Do a 'scratch' (full rebuild) of GCC
+
+OUTPUT
+
+Output from #make# and test(s) is sent to $g_logfile to
+be inspected later if needed.
+
+Output from the compilation is written to
+
+  $pn_p1
+  $pn_p2
+
+`;
+
+$unused_header = qq`
+
+REVISION HISTORY
+ 20230131 Copied from #scan6#; get it working
+
+`;
+
+# We'll trap ^C and use it to exit gracefully
+$g_sigint = 0; $gsi_reasons = '';
+$SIG{'INT'} = sub
+{
+  $g_sigint = 1;
+  $gsi_reasons .= "  in signal handler\n";
+};
+
+sub prt_defer
+{
+  my($s, $mode, $logit) = @_;
+  my($OUT);
+
+  if ($mode == 0) {
+    # Do not print
+  } elsif ($mode > 0) {
+    # print now
+    print $g_pdefer;
+    $g_pdefer = '';
+    print $s;
+  } else {
+    $g_pdefer .= $s;
+  }
+  if ($logit) {
+    open($OUT, ">> $g_logfile");
+    print $OUT $s;
+    close $OUT;
+  }
+} # End of prt.defer
+
+sub sys1
+{
+  my($cmd, $prnt, $logit) = @_;
+  my($res1, $t1, $l, $IN, $good, $ofile);
+  my($tcm, $t1, $t2, $d14);
+  my($cd2, $rv);
+
+  $g_rfn = "$hd/test1-sys1-output.txt";
+  if (-f $g_rfn) {
+    unlink($g_rfn);
+  }
+
+  &prt_defer( (("=-" x 38) . "=\n"), $prnt, $logit);
+  $t1 = time;
+  if ($logit) {
+    $d14 = &date3($t1, 0);
+    &prt_defer("=-= start: $d14\n", 0, $logit);
+  }
+
+  $tcm = "(($cmd) ; sys1result=\"\$?\" "
+         . " ; echo -n \$sys1result ' ' ; echo is sys1 result)";
+  &prt_defer("sys1: $tcm\n", $prnt, $logit);
+  if ($tcm =~ m|/gcc/xgcc|) {
+    if (-f "../p1.txt") {
+      &prt_defer("  unlink(../p1.txt)\n", $prnt, $logit);
+      unlink("../p1.txt");
+    }
+  }
+  if ($prnt > 0) {
+    $cd2 = "$tcm 2>&1 | tee $g_rfn";
+  } else {
+    $cd2 = "$tcm 2>&1 > $g_rfn";
+  }
+  $rv = system($cd2);
+  if ($rv) {
+    print "command: $cd2\n  failed: $?\n";
+    $gsi_reasons .= "  in sys1() after system()\n";
+    $g_sigint = 1;
+    return;
+  }
+  if(!(-f $g_rfn)) {
+    die "sys1: No $g_rfn after running command\n";
+  }
+  if ($logit) {
+    $cd2 = "cat $g_rfn >> $g_logfile";
+    $rv = system($cd2);
+    if ($rv) {
+      print "command: $cd2\n  failed: $?\n";
+      $gsi_reasons .= "  in sys1() after cat\n";
+      $g_sigint = 1;
+      return;
+    }
+  }
+  $t2 = time;
+  if ($logit) {
+    $d14 = &date3($t2, 0);
+    &prt_defer("=-= done:  $d14\n", 0, $logit);
+  }
+  $cd2 = "tail $g_rfn | grep sys1.result";
+  $res1 = (`$cd2`) + 0;
+  &prt_defer("sys1: got $res1\n\n", $prnt, $logit);
+  if ($res1) {
+    print STDERR "Stopping now because of error $res1\n";
+    print STDERR "  (stderr output is saved in $g_rfn\n";
+    print STDERR "  and stdout is in ../p1.txt )\n";
+    print "command: $cd2\n  failed: $?\n";
+    $gsi_reasons .= "  in sys1() after tail $g_rfn\n";
+    $g_sigint = 1;
+    return;
+  }
+  if ("$cmd" =~ m/ss-stdout.txt/) {
+    # Get program's self-measurement
+    $ofile = "ss-stdout.txt";
+    die "No output $ofile\n" if (!(-f $ofile));
+    open($IN, "ss-stdout.txt");
+    $good = 0;
+    while ($l = <$IN>) {
+      chomp $l;
+      if ($l =~ m/^test_function_time: ([-]?[.0-9]+e[-+][0-9]+) *$/) {
+        $good = 1;
+        $sys1_time = ($1) + 0;
+      }
+    }
+    close $IN;
+    die "Did not find time measurement in $ofile\n" if (!($good));
+  }
+
+  # &prt_defer("sys1: got $res1\n\n", $prnt, $logit);
+  die "Stopping now because of error $res1" if ($res1);
+} # End of sys.1
+
+$| = 1;
+
+$cwd = `pwd`; chomp $cwd;
+if ($cwd =~ m|/([wxyz]-gcc)/build$|) {
+  $z_gcc = $1;
+} elsif ($cwd =~ m|/(gcc9)/build$|) {
+  $z_gcc = $1;
+} else {
+  die "cwd is $cwd, please run this in a directory that ends in .../[wxyz]-gcc/build or .../gcc9/build\n";
+}
+require "../rml-utils1.pl";
+
+$Bdir = "$hd/$z_gcc/build/gcc";
+$xgcc = "$Bdir/xgcc";
+
+$do_make = 0;
+$scr_arg = "";
+$optlevel = "-O3";
+while($arg = shift) {
+  if (&help_arg($arg)) {
+    print $help;
+    exit(0);
+  } elsif ($arg eq '-m') {
+    $do_make = 1;
+  } elsif ($arg eq '-s') {
+    $do_make = 1;
+    $scr_arg = $arg;
+  }
+}
+
+# Clear out the logfile
+if (-f $g_logfile) {
+  unlink($g_logfile);
+}
+
+# Build GCC if they asked for that
+$g_make1 = "../make1";
+if ($do_make) {
+  if (!(-x $g_make1)) {
+    die "There is no executable at '$xgcc' (make failed?)\n";
+  }
+  &sys1("$g_make1 $scr_arg -nt", 1, 1);
+}
+
+
+# First compile it with the standard gcc to find out what the output should be.
+print "Compiling with standard installed gcc...\n";
+unlink("./ss") if (-x "./ss");
+$ol = $optlevel;
+$ol =~ s/Oz/Os/;
+
+print "gcc $ol $infile1 $infile2 -o ss\n";
+system("gcc", $ol, $infile1, $infile2, "-o", "ss");
+die "Initial compilation of $infile1 and $infile2 failed.\n" if (!(-x "./ss"));
+open($IN, "./ss |");
+$wantpat = '';
+while ($l = <$IN>) {
+  if ($l =~ m/spent all this time (calculating [-.+e0-9]+)/) {
+    $wantpat = $1;
+    $wantpat =~ s/[+]/./g;
+  }
+}
+if ($wantpat eq '') {
+  die "Could not find expected output pattern in ./ss output\n";
+}
+print "We will be expecting /$wantpat/\n"; # exit(0);
+
+
+if (!(-x $xgcc)) {
+  die "There is no executable at '$xgcc' (make failed?)\n";
+}
+
+
+# Now compile with the custom GCC 'xgcc'; verify that it runs and prints
+# the same output; and get the standard ordering of passes in a group.
+print "Compiling with custom xgcc...\n";
+
+# Set up custom environment variables
+unlink($pn_p1) if (-f $pn_p1);
+$ENV{"RML1_RPT1_PATH"} = $pn_p1;
+print "set ENV{'RML1_RPT1_PATH'} to $ENV{'RML1_RPT1_PATH'}\n";
+
+unlink($pn_p2) if (-f $pn_p2);
+$ENV{"RML1_RPT2_PATH"} = $pn_p2;
+print "set ENV{'RML1_RPT2_PATH'} to $ENV{'RML1_RPT2_PATH'}\n";
+
+# We do not currently test reordering
+#unlink($ord_file) if (-f $ord_file);
+#$ENV{"RML1_ORD_PATH"} = $ord_file;
+#&prt_defer("set ENV{'RML1_ORD_PATH'} to $ENV{'RML1_ORD_PATH'}\n", -1);
+
+unlink("./ss") if (-x "./ss");
+print "$xgcc -B $Bdir $optlevel s4-testfun.c stream4.c -o ss\n";
+system($xgcc, "-B", $Bdir, $optlevel, "s4-testfun.c", "stream4.c", "-o", "ss");
+if (!(-x "./ss")) {
+  die "Initial compilation of s4-testfun.c and stream4.c failed.\n";
+}
+open($IN, "./ss |");
+$wp2 = '';
+while ($l = <$IN>) {
+  if ($l =~ m/spent all this time (calculating [-.+e0-9]+)/) {
+    $wp2 = $1;
+    $wp2 =~ s/[+]/./g;
+  }
+}
+if ($wp2 eq '') {
+  die "With xgcc, the program did not print its expected output\n";
+}
+print "With xgcc the program outputs /$wp2/\n"; # exit(0);
+if ($wp2 ne $wantpat) {
+  die "Wrong output from program compiled with xgcc.\n";
+}
+if (!(-f $pn_p2)) {
+  die "Did not get default ordering output\n";
+}
+
+print "Look for default ordering in $pn_p2\n";
+
+&sys1("ls -l $pn_p1", 1, 1);
+&sys1("head -15 $pn_p1", 1, 1);
+
+&sys1("ls -l $pn_p2", 1, 1);
+&sys1("head -15 $pn_p2", 1, 1);

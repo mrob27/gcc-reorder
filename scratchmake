@@ -1,0 +1,23 @@
+#!/usr/bin/env perl
+#
+$hd = $ENV{"HOME"};
+
+sub sys1
+{
+  my(@cmd) = @_;
+  my($res1);
+
+  print (("=-" x 38) . "=\n");
+  print "sys1: @cmd\n";
+  system(@cmd);
+  $res1 = $?;
+  print "sys1: got $res1\n\n";
+  die "Stopping now because of error $res1" if ($res1);
+}
+
+$cwd = `pwd`; chomp $cwd;
+if (!($cwd =~ m|/z-gcc/build$|)) {
+  die "cwd is $cwd, should end in /z-gcc/build\n";
+}
+
+&sys1("../make1 -s");
