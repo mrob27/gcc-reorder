@@ -1,0 +1,64 @@
+default-withdir: gcc9
+.:
+ cfg
+ cfg-fedora35
+ cfg-ubuntu20
+ clean
+ make1
+ rml-utils1.pl
+ scan1
+ scan2
+ scan3
+ scan4
+ scan5
+ scan6
+ scratchmake
+ test1
+# 20211026.1421.txt
+# ordering.txt
+# ts2.txt
+# ts3.txt
+build:
+ bench1
+ haj-ali-1.c
+ haj-ali-2.c
+ haj-ali-3.c
+ s4-testfun.c
+ s4.h
+ stream1.c
+ stream2.c
+ stream3.c
+ stream4.c
+# 20210409.1149-first-reordered-compile.txt
+build/hist:
+# hist-2f4b99d1.txt
+build/hnar:
+# hnar-1c1151f1.txt
+src:
+ Makefile.tpl
+src/gcc:
+ dbf1.c
+ dbf1.h
+ gcc-main.c
+ gcc.c
+ gcc.h
+ gimple-loop-versioning.cc
+ gimple-ssa-backprop.c
+ ins1.c
+ ins2.c
+ ins3.h
+ main.c
+ ord1.c
+ ord1.h
+ pass_manager.h
+ passes.c
+ passes.def
+ system.h
+ tree-ssa-loop-ivcanon.c
+ tree-ssa-loop-prefetch.c
+# pass-ins1.h
+# pass-ins2.h
+src/libsanitizer/sanitizer_common:
+ sanitizer_common_interceptors_ioctl.inc
+ sanitizer_platform_limits_posix.cc
+ sanitizer_platform_limits_posix.h

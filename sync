@@ -1,0 +1,249 @@
+#!/usr/bin/env perl
+#
+
+$unused_header = q`
+
+REVISION HISTORY
+ 20210308 First version.
+ 20210314 Add scanning for new files and updating of manifest list
+ 20210403 Sync the scripts used for building and testing.
+ 20210406 Reverse order when calling #bmerge2# in sync.1
+ 20220127 Add -with parameter.
+ 20220128 File copies now pause for confirmation.
+ 20220302 Unified manifest
+ 20220406 Much terser output; add -all option and ability to sync
+with multiple -with directories in a single command.
+
+`;
+
+$hd = $ENV{"HOME"}; require "$hd/bin/rpmlib.pl";
+
+$g_dft_withdir = "$hd/z-gcc";
+$cwd = `pwd`; chomp $cwd;
+$pn_proj = $cwd;
+if (!($pn_proj =~ m|^$hd/|) {
+  die "Run #sync# from a directory within $hd\n";
+} elsif (!($pn_proj =~ m|/gcc-reorder$|) {
+  die "Run #sync# from the directory containing it.\n";
+}
+$pn_list = "$pn_proj/sync-list.txt";
+
+$g_sigint = 0; $gsi_reasons = '';
+$SIG{'INT'} = sub
+{
+  $g_sigint = 1;
+  $gsi_reasons .= "  in signal handler\n";
+};
+
+sub load_manifest
+{
+  my($IN, $l, $ns, $ni, $dir, $ln);
+
+  print "Loading manifest...\n";
+  open($IN, $pn_list);
+  $ns = $ni = 0;
+  $dir = ".";
+  while($l = <$IN>) {
+    chomp $l;
+    $l =~ s/^ +//;
+    $l =~ s/ +$//;
+    $l =~ s/ +/ /g;
+    if ($l =~ m|^# ([^ ]+)$|) {
+      # Ignored file
+      $ln = $1;
+      if ($seen_ln{$ln}) {
+        die "Manifest lists leafname '$ln' twice\n";
+      }
+      $seen_ln{$ln} = 1;
+      $ignore{$ln} = $dir;
+      $syncdirs{$dir} = 1;
+      $ni++;
+    } elsif ($l =~ m|^([^ ]+):$|) {
+      # Directory
+      $dir = $1;
+    } elsif ($l =~ m|^([^ ]+)$|) {
+      # Synced file
+      $ln = $1;
+      if ($seen_ln{$ln}) {
+        die "Manifest lists leafname '$ln' twice\n";
+      }
+      $seen_ln{$ln} = 1;
+      $synclist{$ln} = $dir;
+      $syncdirs{$dir} = 1;
+      $ns++;
+    } else {
+      die "load.manifest parse error:\n  $l\n";
+    }
+  }
+  close $IN;
+  print "$ns synced and $ni ignored files.\n";
+  print "\n";
+  $g_manifest_changed = 0;
+} # End of load.manifest
+
+sub save_manifest
+{
+  my($OUT, $pn, $dir, $ln);
+
+  if ($g_manifest_changed == 0) {
+    return;
+  }
+  open($OUT, "> ${pn_list}");
+  foreach $dir (sort (keys %syncdirs)) {
+    print $OUT "$dir:\n";
+    foreach $ln (sort (keys %synclist)) {
+      if ($synclist{$ln} eq $dir) {
+        print $OUT " $ln\n";
+      }
+    }
+    foreach $ln (sort (keys %ignore)) {
+      if ($ignore{$ln} eq $dir) {
+        print $OUT "# $ln\n";
+      }
+    }
+  }
+  close $OUT;
+  $g_manifest_changed = 0;
+} # End of save.manifest
+
+sub add_files
+{
+  my($BLS, $l, $dn, $ln, $pn, $d1);
+
+  $d1 = $g_withdir;
+  chdir($d1);
+  print "add.files: starting #bls# in $d1...\n";
+  open($BLS, "bls -qq -nm -ns -nt . |");
+  while($l = <$BLS>) {
+    chomp $l;
+    $l =~ s|^ |./|;
+    if ($l =~ m|^(.*)/([^/]+)~$|) {
+      $dn = $1; $ln = $2;
+      $dn =~ s|^./||;
+      $pn = "$dn/$ln";
+      if ($synclist{$ln} eq $dn) {
+        # Already synced
+      } elsif ($ignore{$ln} eq $dn) {
+        # Already in ignore list
+      } elsif ($seen_ln{$ln}) {
+        $t1 = "$synclist{$ln}$ignore{$ln}";
+        die "Found an edited '$ln' in $dn,\n  but there is already one in $t1\n";
+      } else {
+        print "New file: $pn\n";
+        if (&yorn("Sync this file? (N to add to ignore list) ")) {
+          $synclist{$ln} = $dn;
+        } else {
+          $ignore{$ln} = $dn;
+        }
+        $syncdirs{$dn} = 1;
+        $g_manifest_changed = 1;
+      }
+    }
+  }
+} # End of add.files
+
+sub sync_files
+{
+  my($cmd, $f2, $h1, $h2, $dir, $ln);
+
+  chdir($pn_proj);
+
+  foreach $dir (sort (keys %syncdirs)) {
+    # print "sync.files in $dir:\n";
+    foreach $ln (sort (keys %synclist)) {
+      if ($synclist{$ln} eq $dir) {
+        # print "syncing $ln\n";
+        $f2 = "$g_withdir/$dir/$ln";
+        $h1 = (-f $ln) + 0;
+        $h2 = (-f $f2) + 0;
+        # print " $h1 $ln\n";
+        # print " $h2 $f2\n";
+        $cmd = '';
+        if ($h1 && $h2) {
+          # Already exists both directories; #bmerge2# it.
+          $cmd = "bmerge2 -q $ln $f2";
+        } elsif ($h1) {
+          # We have it but compile project does not
+          print "No file at $f2\n";
+          if (&yorn("Copy it from $ln? ")) {
+            $cmd = "cp $ln $f2";
+          }
+        } elsif ($h2) {
+          # A new file in the compile project, add to our (synced) dir
+          # (They already approved this addition)
+          $cmd = "cp $f2 .";
+        } else {
+          # It is in neither place
+          die "ERROR: $f2 is neither here nor there.\n";
+        }
+        if ($cmd ne '') {
+          print "  running: $cmd\n";
+          $srv = system($cmd);
+          if ($srv) {
+            print "command: $cmd\n  failed: $?\n";
+            $gsi_reasons .= "  in sync.files() after system()\n";
+            $g_sigint = 1;
+          }
+        }
+      }
+      if ($g_sigint) {
+        die "\nsync: Stopping now because of interrupt:\n$gsi_reasons";
+      }
+    }
+  }
+} # End of sync.files
+
+$| = 1;
+
+while ($arg = shift) {
+  if (0) {
+  } elsif ($arg eq '-all') {
+    foreach $l ('w', 'x', 'y', 'z') {
+      $wd = "$hd/$l-gcc";
+      $g_withdirs[$g_nwith++] = $wd;
+      print "Will sync with: $wd\n";
+    } # exit(0);
+  } elsif ($arg eq '-with') {
+    $wd = shift;
+    $g_withdirs[$g_nwith++] = $wd;
+    print "Will sync with: $wd\n"; # exit(0);
+  } else {
+    die "Unrecognised argument '$arg'\n";
+  }
+}
+
+# Before we can sync anything we need to have the project directory
+# (containing the "master" version of each of the customised files
+# and the manifest list)
+if (!(-d $pn_proj)) {
+  die "No directory at: $pn_proj\n";
+}
+&load_manifest();
+
+# If they gave no -all or -with command, sync with the default ~/z-gcc
+if ($g_nwith <= 0) {
+  $g_withdirs[$g_nwith++] = $g_dft_withdir;
+}
+
+# Sync master files with each instance of the GCC project
+foreach $dir (@g_withdirs) {
+  $g_withdir = $dir;
+  if(!(-d $g_withdir)) {
+    die "There is no directory '$g_withdir'\n";
+  }
+  # Scan this GCC project for new customised files
+  &add_files();
+  # If the manifest list changed, save it
+  &save_manifest();
+  # Make sure this project has a legit copy of the GCC source tree
+  $testfile = "src/gcc/tree-ssanames.c";
+  if ($t1 = "$g_withdir/$testfile", !(-f $t1)) {
+    print STDERR "Skipping $g_withdir because there is no file at $g_withdir/$testfile\n";
+  } else {
+    # Okay, let's sync the files
+    &sync_files();
+    $n_synced++;
+    print "\n";
+  }
+}
+print "Finished $n_synced sync operations.\n";
