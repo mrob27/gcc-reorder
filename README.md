@@ -6,9 +6,5 @@ GCC compiler modifications for reordering the optimization passes
 Setup
 -----
 
-```
-  cd
-  mkdir z-gcc
-  git clone 'https://github.com/gcc-mirror/gcc.git'
-```
+Follow the instructions in 0-README.txt
 
