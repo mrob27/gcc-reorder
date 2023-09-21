@@ -1,0 +1,86 @@
+#!/usr/bin/env perl
+#
+# 20220404 A lot of checks to permit multiple simultaneous builds
+# 20230106 Allow ~/gcc9 as source directory
+# 20230123 If building from ~/gcc9, install prefix is ~/gcc-9
+
+$hd = $ENV{'HOME'};
+
+$| = 1;
+
+$z_gcc = 'z-gcc';
+while ($arg = shift) {
+  if ($arg eq '-zgcc') {
+    $z_gcc = shift;
+    if ($z_gcc =~ m|^[wxyz]-gcc$|) {
+      # okay
+      $mzgcc = $z_gcc;
+    } elsif ($z_gcc eq 'gcc-9') {
+      # okay
+      $mzgcc = "gcc9";
+    } else {
+      die "-zgcc option must match /[wxyz]-gcc/\n";
+    }
+  } else {
+    die "cfg: Unrecognised option '$arg'\n";
+  }
+}
+
+if (!(-d "$hd/$z_gcc")) {
+  die "This cfg script is meant to be used with ~/$z_gcc but no such directory exists.\n";
+}
+
+# the directory we're configuring for should be the same as the one we are in
+$cwd = `pwd`; chomp $cwd;
+if (!($cwd =~ m|$hd/$mzgcc/|)) {
+  die "Trying to configure for $z_gcc, but we are in $cwd\n";
+}
+
+# Work out which set of config options to use
+if (!(-f "../src/gcc/gcc-main.c")) {
+  die "Please run ../cfg from within the build directory\n";
+}
+if ( (-f "/etc/centos-release")
+  || (-f "/etc/fedora-release")
+  || (-f "/etc/redhat-release")
+) {
+  $sysvers = "fedora35";
+} else {
+  $sysvers = "ubuntu20";
+}
+
+$cfp = "../cfg-$sysvers";
+
+if (!(-f $cfp)) {
+  die "I need to run $cfp but it does not exist\n";
+}
+
+# Make sure the configuration options do not reference the wrong devt dir
+# Scan the config script for --prefix
+open ($IN, $cfp);
+$usingdir = '';
+while ($l = <$IN>) {
+  chomp $l;
+  if ($l =~ m|--prefix=.+/([wxyz]-gcc)|) {
+    $usingdir = $1; $l1 = $l;
+  } elsif ($l =~ m|--prefix=.+/(gcc-9)|) {
+    $usingdir = $1; $l1 = $l;
+  }
+}
+close $IN;
+# Make sure --prefix was found and matches
+if ($usingdir eq '') {
+  die "Could not find --prefix line in configuration script '$cfp'\n";
+} elsif ($l1 =~ m|/$z_gcc|) {
+  # good: match
+} else {
+  die "Configuration in $cfp uses the wrong development directory (expected '$z_gcc', found '$usingdir') in this line:\n  $l1\n";
+}
+
+if (!(-x $cfp)) {
+  die "I need to run $cfp but it is not executable\n";
+}
+
+print "Running $cfp\n";
+
+system($cfp);

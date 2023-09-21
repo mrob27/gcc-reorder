@@ -1,0 +1,22 @@
+# Configuration for building GCC from source in Fedora 35
+# Derived from build logs on koji.fedoraproject.org
+#
+# 20230127 Install into ~/gcc-9; no program-prefix and program-suffix options
+#
+../src/configure -v \
+  --build=x86_64-linux-gnu \
+  --disable-bootstrap \
+  --disable-multilib \
+  --enable-checking=release \
+  --enable-languages=c,c++,lto \
+  --prefix=$HOME/gcc-9 \
+  --target=x86_64-linux-gnu \
+  --with-bugurl=file:///usr/share/doc/gcc-9/README.Bugs \
+  --with-gcc-major-version-only \
+  --with-pkgversion='Morobu-9.3.0' \
+  --with-system-zlib \
+  --without-cuda-driver \
+  --without-included-gettext
+
+#  --program-prefix=x86_64-linux-gnu- \
+#  --program-suffix=-9 \

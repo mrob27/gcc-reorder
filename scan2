@@ -1,0 +1,664 @@
+#!/usr/bin/env perl
+#
+
+$hd = $ENV{"HOME"}; require "rml-utils1.pl";
+
+$infile = "./stream3.c";
+$g_samples = 1;  # Normally 500 or 50, make it 1 for fast debugging
+$s4_max_time = 2 * 800;
+$g_strict_freq = 0;
+
+$help = qq`
+
+DESCRIPTION
+
+This test generates random permutations of compilation passes and tries to
+compile the input
+
+  $infile
+
+OPTIONS
+
+  -m    Do a GCC make
+  -s    Do a 'scratch' (full rebuild) of GCC
+
+`;
+
+$unused_header = qq`
+
+REVISION HISTORY
+ 20210916 First version
+ 2021091x Random ordering
+ 20210923 Checksum and test length of binary output
+ 20211005 Add os_make, os_intersect, os_stringify and use them to
+characterise the 5 classes of permutations by which pairswise orderings
+always appear in that class.
+ 20211006 Add sys4, now taking the best 25 out of 40 consecutive
+measurements
+ 20211104 Copied from #scan1#. Adapt &sys.1() to include all the
+improvements I added to the #make1# version last week.
+ 20211112 A lot of refactoring to support the changes I am making to
+ord1.c
+
+`;
+
+# use Time::HiRes qw(clock_gettime);
+
+sub sys1
+{
+  my($cmd) = @_;
+  my($res1, $t1, $l, $IN, $good, $ofile);
+  my($tcm, $rfn);
+
+  $rfn = "sys1-output.txt";
+  if (-f $rfn) {
+    unlink($rfn);
+  }
+#  print (("=-" x 38) . "=\n") unless ($cmd =~ m|\./ss|);
+  if ($cmd =~ m|\./ss|) {
+    # $s1_bindcpu = int(16*rand());
+    $s1_bindcpu = ($s1_bindcpu + 1) % 16;
+    $cmd = "numactl --physcpubind=$s1_bindcpu -- $cmd";
+  }
+  # To demonstrate error catching and redirection of both stderr and
+  # stdout, replace "($cmd)" with any of the following:
+  #        (exit 1)
+  #        (perl -e 'print \"normal output\\n\";')
+  #        (perl -e 'print STDERR \"1\\n\";')
+  $tcm = "(($cmd) ; sys1result=\"\$?\" "
+         . " ; echo -n \$sys1result ' ' ; echo is sys1 result)";
+  print "sys1: $tcm\n" if ($cmd =~ m/gcc/);
+  if ($tcm =~ m|/gcc/xgcc|) {
+    if (-f "../p1.txt") {
+      print "  unlink(../p1.txt)\n";
+      unlink("../p1.txt");
+    }
+  }
+  if ($cmd =~ m|\./ss|) {
+    system("$tcm 2>&1 > $rfn");
+  } else {
+    system("$tcm 2>&1 | tee $rfn");
+  }
+  if(!(-f $rfn)) {
+    die "sys1: No $rfn after running command\n";
+  }
+  $res1 = (`tail $rfn | grep sys1.result`) + 0;
+  print "sys1: got $res1\n\n" unless ($cmd =~ m|\./ss|);
+  if ($res1) {
+    print STDERR "Stopping now because of error $res1\n";
+    print STDERR "  (stderr output is saved in $rfn\n";
+    print STDERR "  and stdout is in ../p1.txt )\n";
+    exit(1);
+  }
+  if ("$cmd" =~ m/ss-stdout.txt/) {
+    # Get program's self-measurement
+    $ofile = "ss-stdout.txt";
+    die "No output $ofile\n" if (!(-f $ofile));
+    open($IN, "ss-stdout.txt");
+    $good = 0;
+    while ($l = <$IN>) {
+      chomp $l;
+      if ($l =~ m/^test_function_time: ([-]?[.0-9]+e[-+][0-9]+) *$/) {
+        $good = 1;
+        $sys1_time = ($1) + 0;
+      }
+    }
+    close $IN;
+    die "Did not find time measurement in $ofile\n" if (!($good));
+  }
+
+  # print "sys1: got $res1\n\n";
+  die "Stopping now because of error $res1" if ($res1);
+} # End of sys.1
+
+# Run twice, discard the first measurement
+sub sys2
+{
+  my($cmd) = @_;
+  print "sys2: $cmd\n";
+  &sys1($cmd);
+  &sys1($cmd);
+} # End of sys.2
+
+sub census_mhz
+{
+  my($gg, $cn, $p1, $p2, $p3, $p, $f, $fmax);
+  my($IN);
+
+  $p1 = "/sys/devices/system/cpu/cpu";
+  $p2 = "/cpufreq/";
+  if (-f "${p1}0${p2}scaling_cur_freq") {
+    $p3 = "scaling_cur_freq";
+  } else {
+    $p3 = "cpuinfo_cur_freq";
+  }
+
+  $gg = 1;
+  for ($cn=0; $gg; $cn++) {
+    $p = "$p1$cn$p2$p3";
+    if (-f $p) {
+      open($IN, $p); $f=<$IN>; chomp $f; close $IN;
+    } else {
+      $f = 0; $gg = 0;
+    }
+    if ($f > $fmax) { $fmax = $f; }
+  }
+  $f = int(($fmax + 50000)/100000);
+  # print "${f}00 MHz ";
+  return $f;
+} # End of census.mhz
+
+# Run 3 times, check clock speeds 4 times, declare the result to be valid
+# only when the fastest core falls in the majority bin (of core clock speeds
+# rounded to the nearest multiple of 100 MHz)
+sub sys3
+{
+  my($cmd) = @_;
+  my($frq);
+
+  $s3_valid = 0;
+  &sys1($cmd);
+  $s3_time = $sys1_time;
+
+  $frq = &census_mhz();
+  if ($g_strict_freq == 0) {
+  } elsif ($frq > 25) { die qq`
+Please turn off turbo mode with the command:
+
+  echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
+
+`; } elsif ($frq > 23) {
+    return;
+  }
+
+  &sys1($cmd);
+  if ($sys1_time > $s3_time) { $s3_time = $sys1_time; }
+  &sys1($cmd);
+  if ($sys1_time > $s3_time) { $s3_time = $sys1_time; }
+  $s3_valid = 1;
+} # End of sys.3
+
+# Plot a histogram (we shift it to avoid empty buckets at the beginning
+# but don't bother to scale width and height)
+sub dump_hist
+{
+  my(@times) = @_;
+  my(@hist); my(@wid);
+  my($n, $lowest, $highest, $toff, $twid);
+  my($t, $buk, $avg, $sumsq, $sdev);
+  my(@bra);
+  my($t14, $OUT, $l);
+  my($widest, $i);
+
+  @hist = (sort {$a <=> $b} @times);
+  @wid = ();
+  $n = $#hist; $lowest = $hist[0]; $highest = $hist[$n];
+  $widest = 0;
+  $toff = int($hist_rez*$lowest);
+  @hist = (); $n = 0; $twid = 0;
+  $avg = 0; $sumsq = 0;
+  foreach $t (sort {$a <=> $b} @times) {
+    $buk = int($hist_rez*$t)-$toff;
+    $hist[$buk] .= '*';
+    $wid[$buk]++;
+    if ($wid[$buk] > $widest) { $widest = $wid[$buk]; }
+    $avg += $t; $sumsq += $t*$t; $n++;
+    if ($buk > $twid) { $twid = $buk; }
+  }
+  $avg /= $n;
+  $sdev = sqrt($sumsq/$n - $avg*$avg);
+  $twid = int($twid/2) + 3;
+
+  # Shrink the height, if needed
+  if ($widest > 64) {
+    for($i=0; $i<=$twid; $i++) {
+      $hist[$i] = "*" x int(($wid[$i] * 64 / $widest) + 0.5);
+    }
+  }
+
+  # Convert to Unicode Braille for easier viewing, and dump to a
+  # file tagged with a timestamp, lowest/avg/highest, etc.
+  @bra = &a2b_graphix('rot1 trim cond', @hist);
+  # Get new width (after condensing)
+  $twid = $g_a2b_out_col;
+  open($OUT, ">> $hist_outpath");
+  $t14 = &date3(time, 0);
+  print $OUT sprintf("%s %s  crc=%08x\n", $t14, $infile, $s4_in_crc);
+  print $OUT sprintf("  runtime=%g +- %g, clock %6.2f MHz\n",
+                                          $avg, $sdev, $hist_avg_mhz);
+  foreach $l (@bra) {
+    print $OUT " $l\n";
+  }
+  print $OUT ("|"  . ("_" x ($twid-2)) . "|\n");
+  print $OUT ($lowest . " N=$n "
+       . (" "x($twid-length("$lowest N=$n $highest"))) . "$highest\n");
+  print $OUT "\n";
+  close $OUT;
+} # End of dump.hist
+
+# Run 40 times, average together the top 25
+sub sys4
+{
+  my($cmd) = @_;
+  my($gg, $i, $n, $frq, $ttime);
+  my($tests);
+  my(@times);
+  my(@hist); my(@bra); my($OUT);
+  my($l, $t14, $lowest, $toff, $t, $buk, $twid, $highest);
+  my($ttime, $tstart);
+
+  $tests = int(($g_samples * 8) / 5);
+  $tstart = time;
+
+  $s4_valid = 0;
+  $gg = 1; $n = 0; $tmhz = 0;
+  for($i=0; $gg; $i++) {
+    &sys1($cmd);
+
+    $frq = &census_mhz();
+    if ($g_strict_freq && ($frq > 25)) { die qq`
+Please turn off turbo mode with the command:
+
+  echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
+
+`; } elsif ($g_strict_freq && ($frq > 23)) {
+      # Ignore this one
+    } else {
+      # put this one in the bin
+      $tmhz += $frq;
+      $times[$n++] = $sys1_time;
+      print "  sys4 measuring, n=$n cpu $s1_bindcpu raw $sys1_time   \r";
+    }
+    $ttime = time - $tstart;
+    if (($n >= $tests) || ($ttime > $s4_max_time)) {
+      # We have enough now
+      $gg = 0;
+    }
+  }
+  print((" " x 78) . "\n");
+
+  $hist_rez = 1000; $hist_avg_mhz = $tmhz*100.0/$n;
+  if ($n >= 20) {
+    $hist_outpath = sprintf("hist/hist-%08x.txt", $s4_in_crc);
+    &dump_hist(@times);  # 1 ms resolution
+
+    $hist_rez = 500; $hist_outpath = sprintf("hnar/hnar-%08x.txt", $s4_in_crc);
+    &dump_hist(@times);  # narrow plot (2 ms resolution)
+  }
+
+  $ttime = 0;
+  foreach $t (@times) {
+    $ttime += $t;
+    $sumsq += $t*$t;
+    # print "s4: $n $t\n";
+  }
+
+  $s4_time = $ttime / $n;
+  $s4_sdev = sqrt($sumsq/$n - $s4_time*$s4_time);
+  $s4_n = $n;
+  # print "sys4: returning $s4_time\n";
+  $s4_valid = 1;
+} # End of sys.4
+
+# Make an ordering signature
+sub os_make
+{
+  my(@vec) = @_;
+  my(@os);
+  my(%t);
+  my($a, $b, $valid);
+
+  # print ("osm1 " . join(" ", @vec) . "\n");
+
+  foreach $b (@vec) {
+    # print "  $b\n";
+    $valid = 1;
+    foreach $a (@vec) {
+      # print "    $a\n";
+      if ($a eq $b) {
+        $valid = 0;
+      } elsif ($valid) {
+        $t{"$a-$b"} = 1;
+      }
+    }
+  }
+  return (sort (keys %t));
+} # End of os.make
+
+# Given an array of strings, sort them and catenate with ',' separators.
+sub os_stringify
+{
+  my(@vec) = @_;
+  return join(",", (sort (@vec)));
+} # End of os.stringify
+
+# Given two signatures, return their intersection
+sub os_intersect
+{
+  my($str1, $str2) = @_;
+  my(@s1);
+  my(@s2);
+  my(%t);
+  my(%rv);
+  my($k);
+
+  @s1 = split(/,/, $str1);
+  @s2 = split(/,/, $str2);
+  foreach $k (@s1) {
+    $t{$k} = 1;
+    # print "t{$k} = 1\n";
+  }
+  foreach $k (@s2) {
+    # print "  checking t{$k}\n";
+    if ($t{$k}) {
+      # print "    T\n";
+      $rv{$k} = 1;
+    }
+  }
+  return (sort (keys %rv));
+} # End of os.intersect
+
+# Given an ordering signature, look for transitive identities of
+# the type "(a<b) & (b<c) ==> (a<c)" and remove the redundant one
+# (the one that is implied by the other two)
+sub os_detrans
+{
+  my($str1) = @_;
+  my(@s1);
+  my(%t);
+  my(%s);
+  my($k, $a, $b, $c);
+
+  # Unpack the string
+  @s1 = split(/,/, $str1);
+  # Make a hash of all the pairs, and make a hash of all elements
+  # that occur second in a pair
+  foreach $k (@s1) {
+    $t{$k} = 1;
+    if ($k =~ m/^[^-]+-([^-]+)$/) {
+      $b = $1;
+      $s{$b} = 1;
+    } elsif ($k =~ m/^([^-]+)$/) {
+      # Single name, these are OK to ignore
+    } else {
+      die "os.detrans cannot parse |$k|\n";
+    }
+  }
+  foreach $k (@s1) {
+    if ($k =~ m/^([^-]+)-([^-]+)$/) {
+      # We have "a<b"
+      $a=$1; $b=$2;
+      foreach $c (keys %s) {
+        if ($t{"$b-$c"}) {
+          # We found a c for which "b<c"
+          if ($t{"$a-$c"}) {
+            # We also have "a<c", which is redundant and can be removed
+            delete $t{"$a-$c"};
+          }
+        }
+      }
+    } else {
+      die "os.detrans cannot parse |$k|\n";
+    }
+  }
+  # All single names will survive, as well any any pairs that did not
+  # get removed by the transitive identity. Return what remains.
+  return &os_stringify((keys %t));
+} # End of os.detrans
+
+sub report1
+{
+  my($crc);
+  $best_avg = 9.9e99;
+  foreach $crc (keys %crc_tn) {
+    $crc_avg{$crc} = $crc_time{$crc}/$crc_tn{$crc};
+    if ($crc_avg{$crc} < $best_avg) {
+      $best_avg = $crc_avg{$crc};
+      $best_crc = $crc;
+    }
+  }
+  $maxN = 0; $minN = 9.9e99;
+  $minpop = 9.9e99;
+  $alldet = '';
+  print " -pop- bin-CRC  d f avgTim (pairwise orderings of optimisation passes, sorted)\n";
+  foreach $crc (sort {$crc_det{$a} cmp $crc_det{$b}} (keys %crc_tn)) {
+    print sprintf("%6d %08x %s %s %6.3f %s\n", $crc_pop{$crc}, $crc,
+               ($crc == $first_crc) ? "*" : " ",
+               ($crc == $best_crc) ? ">" : " ",
+               $crc_avg{$crc}, $crc_det{$crc});
+    if ($crc_pop{$crc} < $minpop) { $minpop = $crc_pop{$crc}; }
+    if ($crc_n{$crc} > $maxN) {     $maxN = $crc_n{$crc};     }
+    if ($crc_n{$crc} < $minN) {     $minN = $crc_n{$crc};     }
+    $alldet .= $crc_det{$crc};
+  }
+  if ($minN <= 0) {
+    print " N unknown";
+  } elsif ($minN == $maxN) {
+    print " N=$minN";
+  } else {
+    print " N in [$minN..$maxN]";
+  }
+  print "   (* is default ordering   > is fastest)\n";
+  if ($minpop >= 10) {
+    if ($alldet ne $last_ad) {
+      $ad_crc = &crc32_string($alldet);
+      $last_ad = $alldet;
+      $chg_mp = $minpop;
+    }
+  }
+  if ($ad_crc > 0) {
+    print sprintf(" signature of sorted list of sorted lists of pairwise orderings: %08x\n", $ad_crc);
+  }
+  if ($chg_mp > 0) {
+    print "   (signature last changed at min CRC population: $chg_mp)\n";
+  }
+  if (($minpop > 1) && ($i > 10)) {
+    print sprintf("   Rarest occurs with frequency %9.3e (about 1 in %d)\n",
+      $minpop/$i, int($i/$minpop + 0.5));
+  }
+} # End of re.port1
+
+$| = 1;
+
+$do_make = 0;
+$scr_arg = "";
+while($arg = shift) {
+  if (&help_arg($arg)) {
+    print $help;
+    exit(0);
+  } elsif ($arg eq '-m') {
+    $do_make = 1;
+  } elsif ($arg eq '-s') {
+    $do_make = 1;
+    $scr_arg = $arg;
+  }
+}
+
+$cwd = `pwd`; chomp $cwd;
+if (!($cwd =~ m|/z-gcc/build$|)) {
+  die "cwd is $cwd, please run this in a directory that ends in .../z-gcc/build\n";
+}
+
+if ($do_make) {
+  &sys1("../make1 $scr_arg -nt");
+}
+
+$Bdir = "$hd/z-gcc/build/gcc";
+$xgcc = "$Bdir/xgcc";
+
+if (!(-x $xgcc)) {
+  die "There is no make failed.\n";
+}
+
+$ord_file = "$hd/z-gcc/ordering.txt";
+
+$parent = "loop";
+
+@elems = (
+ # "loopinit",
+  "unswitch", "sccp", "lsplit", "ch_vect", "ifcvt",
+  "vect", "pcom", "cunroll", "lversion", "unrolljam",
+  "cddce", "copyprop", "graphite0", "parloops", "ompexpssa",
+  "ivcanon", "linterchange", "ldist", "slp", "aprefetch",
+  "ivopts", "lim",
+ # , "loopdone"
+  );
+
+$pn_p1 = "../p1.txt";
+
+# Figure out what output to expect
+unlink("./ss") if (-x "./ss");
+system("gcc", "-O3", $infile, "-o", "ss");
+die "Initial compilation of $infile failed.\n" if (!(-x "./ss"));
+open($IN, "./ss |");
+$wantpat = '';
+while ($l = <$IN>) {
+  if ($l =~ m/spent all this time (calculating [-.+e0-9]+)/) {
+    $wantpat = $1;
+    $wantpat =~ s/[+]/./g;
+  }
+}
+if ($wantpat eq '') {
+  die "Could not find expected output pattern in ./ss output\n";
+}
+print "We will be expecting /$wantpat/\n"; # exit(0);
+
+# Now do some tests
+$numswaps = 0; $ad_crc = $chg_mp = 0;
+for ($i=0; ; $i++) {
+  print (("=-" x 38) . "=\n");
+
+  if (-f $pn_p1) {
+    unlink($pn_p1);
+  }
+
+  open($OUT, "> $ord_file");
+  print $OUT "$parent:\n";
+  print $OUT "loopinit\n";
+  @el = @elems;
+  if ($i > 0) {
+    $numswaps = 18 + ($i & 7);
+  }
+  for ($j=0; ($j<$numswaps) && ($j<$#el); $j++) {
+    $k = $#el - int(rand($#el-$j));
+    # print "swap($j,$k)\n";
+    $t=$el[$j]; $el[$j]=$el[$k]; $el[$k]=$t;
+  }
+  $elist = ''; $j = 0;
+  $listlen = 1 + int(rand($#el));
+  foreach $e (@el) {
+    if ($j < $listlen) {
+      print $OUT "$e\n";
+      $elist .= " $e";
+    } else {
+      print $OUT "$e 0\n";
+    }
+    $j++;
+  }
+  # loopdone will be automatically done on the final outer loop pass,
+  # at the end of all the other passes in the group that are not listed,
+  # and so we do not need to specify it in our list.
+  print $OUT "loopdone\n";
+  close $OUT;
+  @sig = &os_make(@el);
+  $this_sig = &os_stringify(@sig);
+  $el_pop{$elist}++;
+  print sprintf("  %4d %4d %s\n", $i, $el_pop{$elist}, $elist);
+
+  # Print the report here so the scrolling display doesn't jitter
+  print "\n";
+  &report1();
+  print "\n";
+
+  # Remove executable from last time, if any
+  unlink("./ss") if (-x "./ss");
+
+  # Test the ordering feature on a compilation
+  $ENV{"RML1_ORD_PATH"} = $ord_file;
+  print "set ENV{'RML1_ORD_PATH'} to $ENV{'RML1_ORD_PATH'}\n";
+  &sys1("$xgcc -O3 -B $Bdir $infile -o ss");
+  # select(undef, undef, undef, 0.25);
+
+  die "No executable ss\n" if (!(-x "./ss"));
+
+  # &sys1("ls -l ss");
+  $crc = &path_crc("./ss");
+  if ($first_size == 0) {
+    $first_size = (-s "./ss");
+    $first_crc = $crc;
+  } elsif ((-s "./ss") == $first_size) {
+    # Okay
+  } else {
+    die "Output binary size has changed!\n";
+  }
+
+  # Count how many distinct binaries we get; and run each distinct binary
+  # only once
+  $runit = 0;
+  if ($crc_pop{$crc} > 0) {
+    # We got a CRC that we saw before
+    $crc_pop{$crc}++;
+    # Update its signature
+    $new_sig = &os_stringify(&os_intersect($crc_sig{$crc}, $this_sig));
+  } else {
+    $num_crcs++;
+    $crc_pop{$crc} = 1;
+    $new_sig = $this_sig;
+    $runit = 1;
+    $s4_in_crc = $crc;
+  }
+  # Uncomment this to run muliple times
+  # if ($crc_pop{$crc} <= 25) { $runit = 1; }
+  $crc_sig{$crc} = $new_sig;
+  if ($bin_cksum == 0) {
+    $bin_cksum = $crc;
+  }
+  printf(" %4d %s crc:%8x  (%d distinct CRCs so far)\n\n",
+        $crc_pop{$crc}, (($crc == $bin_cksum) ? 'U' : '.'), $crc, $num_crcs);
+
+  foreach $crc (keys %crc_sig) {
+    $crc_det{$crc} = &os_detrans($crc_sig{$crc});
+  }
+
+  if ($runit) {
+    # Get assembly output
+    &sys1("$xgcc -O3 -B $Bdir $infile -S -o asmtemp.s");
+    if(!(-f "asmtemp.s")) {
+      die "no assembly from xgcc $infile -S\n";
+    }
+    rename("asmtemp.s", sprintf("asm/asm-%08x.s", $crc));
+
+    &sys4("./ss >ss-stdout.txt 2>&1");
+    if ($s4_valid) {
+      $crc_time{$crc} = $s4_time;
+      $crc_sdev{$crc} = $s4_sdev;
+      $crc_n{$crc} = $s4_n;
+      $crc_tn{$crc}++;
+
+      if (-f $pn_p1) {
+        rename($pn_p1, sprintf("p1/p1-%08x.s", $crc));
+      }
+    }
+
+    $good = 0; $outpt = '';
+    open($IN, "ss-stdout.txt");
+    while ($l = <$IN>) {
+      $outpt .= $l;
+      chomp $l;
+      if ($l =~ m/$wantpat/) {
+        $good = 1;
+      }
+    }
+    close $IN;
+    if (!($good)) {
+      print $outpt;
+      die "./ss did not give expected output /$wantpat/\n";
+    }
+  }
+}
+
+&sys1("ls -l $pn_p1");
+
+&sys1("head -15 $pn_p1");
+
+print "performed $i successful tests.\n";

@@ -1,0 +1,192 @@
+#!/usr/bin/env perl
+#
+$hd = $ENV{"HOME"};
+
+$g_lfn = "s1_outpt.txt";
+$g_rfn = "make1-output.txt";
+
+$help = qq`
+
+With no options, this rebuilds GCC and runs one test.
+
+OPTIONS
+  -nm   Do not run #make#
+  -nt   Do not perform test
+  -s    Scratch build: make clean && make
+
+OUTPUT
+
+Output is sent to $g_rfn to be inspected later if needed.
+
+`;
+
+my $unused_header = qq`
+
+REVISION HISTORY
+ 20210916 Add -nm and -nt options.
+ 20220127 Log all output to "$g_rfn" and last command (usually
+"./ss") to "$g_lfn"
+ 20220404 Auto-detect which build directory we are in
+ 20230106 Support building from ~/gcc9
+ 20230127 Do "make install" if building from ~/gcc9
+
+`;
+
+# Delete the 
+sub clear_grfn
+{
+  if (-f $g_rfn) {
+    unlink($g_rfn);
+  }
+}
+
+sub log1
+{
+  my($l, $err) = @_;
+  my($OUT);
+
+  if ($err) {
+    print STDERR $l;
+  } else {
+    print $l;
+  }
+  open($OUT, ">> $g_rfn");
+  print $OUT $l;
+  close $OUT;
+} # End of log.1
+
+sub sys1
+{
+  my(@cmd) = @_;
+  my($tcm, $res1, $cfn);
+
+  if (-f $g_lfn) {
+    unlink($g_lfn);
+  }
+  $cfn = "s1-cmd"; if (-f $cfn) { unlink($cfn); }
+  &log1(("=-" x 38) . "=\n");
+  &log1(`date '+%Y%m%d.%H:%M:%S'`);
+  # To demonstrate error catching and redirection of both stderr and
+  # stdout, replace "(@cmd)" with any of the following:
+  #        (exit 1)
+  #        (perl -e 'print \"normal output\\n\";')
+  #        (perl -e 'print STDERR \"1\\n\";')
+  # perhaps add LC_ALL=\"C\" LC_CTYPE=\"C\" before @cmd
+  $tcm = "((@cmd) ; sys1result=\"\$?\" "
+         . " ; echo -n \$sys1result \" \" ; echo is sys1 result)";
+  &log1("sys1: $tcm\n");
+  open($CF, "> $cfn");
+  print $CF "#!/bin/bash\n";
+  print $CF "$tcm\n";
+  close $CF;
+  system("chmod +x $cfn");
+  # system("/bin/bash -c '$tcm 2>&1' | tee $g_lfn | tee -a $g_rfn");
+  system(              "./$cfn 2>&1  | tee $g_lfn | tee -a $g_rfn");
+  if(!(-f $g_lfn)) {
+    die "sys1: No $g_lfn after running command\n";
+  }
+  $res1 = (`tail $g_lfn | grep sys1.result`) + 0;
+  &log1("sys1: got $res1\n\n");
+  if ($res1) {
+    &log1("Stopping now because of error $res1\n"
+        . "  (stderr output is saved in $g_lfn\n"
+        . "  and all output is in $g_rfn )\n", 1);
+    exit(1);
+  }
+} # End of sys.1
+
+# Print a prompt and wait for a Y or N answer.
+sub yorn
+{
+  my($prompt) = @_;
+  my($ans);
+
+  $ans = "";
+  while ($ans eq "") {
+    print $prompt;
+    $ans = <>; chomp $ans;
+    $ans =~ tr/A-Z/a-z/;
+    if ($ans =~ m/^y/) {
+      print " YES\n";
+      return 1;
+    } elsif ($ans =~ m/^n/) {
+      print " NO\n";
+      return 0;
+    }
+    print "Please answer Y or N.\n";
+    $ans = "";
+  }
+  print "\n";
+} # End of y.orn
+
+$| = 1;
+
+$do_make = 1;
+$do_test = 1;
+$scratch = 0;
+while($arg = shift) {
+  if ($arg =~ m/^-[-]?h(elp)?$/) {
+    print $help; exit(0);
+  } elsif ($arg eq '-nm') {
+    $do_make = 0;
+  } elsif ($arg eq '-nt') {
+    $do_test = 0;
+  } elsif ($arg eq '-s') {
+    $do_make = 1;
+    $scratch = 1;
+  }
+}
+
+# Glean the proper -zgcc option for #cfg#
+$cwd = `pwd`; chomp $cwd;
+if ($cwd =~ m|/([wxyz]-gcc)/build$|) {
+  $z_gcc = $1;
+} elsif ($cwd =~ m|/(gcc9)/build$|) {
+  $z_gcc = "gcc-9";
+} else {
+  die "cwd is $cwd, this make1 script is meant to be used in ~/[wxyz]-gcc/build\n";
+}
+# Also get parent directory, this is where the output file(s) will go
+$g_zgcc = $cwd; $g_zgcc =~ s|/build$||;
+
+&clear_grfn();
+
+if ($do_make) {
+  # Build GCC
+  if ($scratch && &yorn("Are you sure you want to build from scratch? ")) {
+    # Build it from scratch
+    print "Building from scratch (clean and cfg) ...\n";
+    &sys1("../clean");
+    &sys1("../cfg -zgcc $z_gcc");
+  } else {
+    print "Incremental (re)build...\n";
+  }
+
+  &sys1("time", "make",
+          "-j", 4,           # Run up to 4 commands at once
+          "MAKEINFO=true");  # Disable building the documentation
+
+  if (!($z_gcc =~ m|[wxyz]-gcc|)) {
+    &sys1("time", "make", "install");
+  }
+
+  if (-x "ss") {
+    unlink("ss");
+  }
+}
+
+$ord_file = "$g_zgcc/ordering.txt";
+
+if ($do_test) {
+  # Test the ordering feature on a compilation
+  $ENV{"RML1_ORD_PATH"} = $ord_file;
+  print "\$RML1_ORD_PATH == '$ord_file'\n";
+  &sys1("time", "$g_zgcc/build/gcc/xgcc", "-O3", "-B", "$g_zgcc/build/gcc",
+    "$g_zgcc/build/stream1.c", "-o", "ss");
+
+  die "No ./ss\n" if (!(-f "./ss"));
+
+  &sys1("ls", "-l", "ss");
+
+  &sys1("time ./ss");
+}

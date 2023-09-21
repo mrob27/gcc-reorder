@@ -1,0 +1,18 @@
+# Configuration for building GCC from source in Ubuntu 20.04 LTS
+# Derived from running "gcc -v" on a 20.04 LTS system
+../src/configure -v \
+  --build=x86_64-linux-gnu \
+  --disable-bootstrap \
+  --disable-multilib \
+  --enable-checking=release \
+  --enable-languages=c,c++,lto \
+  --prefix=$HOME/gcc9 \
+  --program-prefix=x86_64-linux-gnu- \
+  --program-suffix=-9 \
+  --target=x86_64-linux-gnu \
+  --with-bugurl=file:///usr/share/doc/gcc-9/README.Bugs \
+  --with-gcc-major-version-only \
+  --with-pkgversion='Morobu-9.3.0' \
+  --with-system-zlib \
+  --without-cuda-driver \
+  --without-included-gettext

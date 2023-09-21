@@ -1,0 +1,1138 @@
+#!/usr/bin/env perl
+#
+$hd = $ENV{"HOME"};
+
+# Number of trials before finding the minimal set of signatures,
+# with original all-random search and new method:
+#  Old: 8484 2739 3537  5663 4779 4524 4123 6154 9656
+#  New: 1077  370 3491 10081 9965  385 2345 3981 4879
+#
+# With better termination condition based on "entropy":
+#  Old:  437 1908 1828 2123 1314 1379 1387 1788
+#  New:  150  147  128  170  158  128  194  176
+#
+# Changing the entropy target from 1/4 to 1/10 and running the tests again:
+#  Old: 6866 8918 9223 10476 1199 8624 8666 15396 4241 4754 7634 2247
+#  New:  222  230  276   220  202  210  254   234  186  248  256  248
+
+$g_do_quick_reduction = 0;
+  $g_halt_slsl_sig = "0207adad";
+  $target_crcs = 7; $target_ent_improve = 10;
+$g_samples = 500;  # Normally 500 or 50, make it 1 for fast debugging, must
+                   # be at least 20 for histogram output
+$s6_max_time = 2 * 800;
+$g_strict_freq = 0;
+$g_logfile = "scanN-log.txt";
+
+$help = qq`
+
+DESCRIPTION
+
+This test uses the RML1_RPT2_PATH environment variable to get the
+default pass ordering lists from GCC, then chooses a "group" (a node
+in the tree that contains a list of passes), then within that group,
+generates random permutations of the passes in that group, and tries
+to compile the inputs
+
+  s4-testfun.c    stream4.c
+
+with each permutation. It examines the output binary (in object .o
+format) for the test function to detect when a permutation generates
+the same or a different executable. From this it can infer which
+passes in the group, and which pairwise orderings thereof, make a
+difference for that particular test function.
+
+OPTIONS
+
+  -g loop   Permute the passes in the 'loop' group. (If this option is
+            not given, the default is the 'loop' group.) Others worth
+            trying include:
+              early_optimizations
+              *all_optimizations
+              *rest_of_compilation
+              loop2
+              *all-postreload
+              *stack_regs
+              *all-late_compilation
+  -m        Do a GCC make
+  -s        Do a 'scratch' (full rebuild) of GCC
+
+OUTPUT
+
+Output is sent to $g_logfile to be inspected later if needed.
+
+`;
+
+$unused_header = qq`
+
+REVISION HISTORY
+ 20220412 Copied from #scan5#
+
+`;
+
+# We'll trap ^C and use it to exit gracefully
+$g_sigint = 0; $gsi_reasons = '';
+$SIG{'INT'} = sub
+{
+  $g_sigint = 1;
+  $gsi_reasons .= "  in signal handler\n";
+};
+
+sub test_pp
+{
+  @lst = ('foo', 'bar', 'baz');
+  print "start: @lst\n";
+  unshift(@lst, 'aaa'); push(@lst, 'zzz');
+  print "added: @lst\n";
+  $f = shift @lst; $l = pop @lst;
+  print "del'd: @lst\n";
+}
+# &test_pp(); exit(0);
+
+sub prt_defer
+{
+  my($s, $mode, $logit) = @_;
+  my($OUT);
+
+  if ($mode == 0) {
+    # Do not print
+  } elsif ($mode > 0) {
+    # print now
+    print $g_pdefer;
+    $g_pdefer = '';
+    print $s;
+  } else {
+    $g_pdefer .= $s;
+  }
+  if ($logit) {
+    open($OUT, ">> $g_logfile");
+    print $OUT $s;
+    close $OUT;
+  }
+} # End of prt.defer
+
+$p_nctl = "/usr/bin/numactl"; $g_hnc_answer = $g_hnc_called = 0;
+sub have_numactl
+{
+  if ($g_hnc_called) {
+    return $g_hnc_answer;
+  }
+  if (-x $p_nctl) {
+    $g_hnc_answer = 1;
+  } else {
+    $g_hnc_answer = 0;
+  }
+  $g_hnc_called = 1;
+  return $g_hnc_answer;
+} # End of have.numactl
+
+sub sys1
+{
+  my($cmd, $prnt, $logit) = @_;
+  my($res1, $t1, $l, $IN, $good, $ofile);
+  my($tcm, $rfn, $t1, $t2, $d14);
+  my($cd2, $rv);
+
+  $rfn = "sys1-output.txt";
+  if (-f $rfn) {
+    unlink($rfn);
+  }
+
+  &prt_defer( (("=-" x 38) . "=\n"), $prnt, $logit);
+  $t1 = time;
+  if ($logit) {
+    $d14 = &date3($t1, 0);
+    &prt_defer("=-= start: $d14\n", 0, $logit);
+  }
+  # Use #numactl#, but only for running the compiled test program,
+  # and of course only if #numactl# actually exists
+  if ($cmd =~ m|\./ss|) {
+    # $s1_bindcpu = int(16*rand());
+    $s1_bindcpu = ($s1_bindcpu + 1) % 16;
+    if (&have_numactl()) {
+      $cmd = "$p_nctl --physcpubind=$s1_bindcpu -- $cmd";
+    }
+  }
+  # To demonstrate error catching and redirection of both stderr and
+  # stdout, replace "($cmd)" with any of the following:
+  #        (exit 1)
+  #        (perl -e 'print \"normal output\\n\";')
+  #        (perl -e 'print STDERR \"1\\n\";')
+  $tcm = "(($cmd) ; sys1result=\"\$?\" "
+         . " ; echo -n \$sys1result ' ' ; echo is sys1 result)";
+  &prt_defer("sys1: $tcm\n", $prnt, $logit);
+  if ($tcm =~ m|/gcc/xgcc|) {
+    if (-f "../p1.txt") {
+      &prt_defer("  unlink(../p1.txt)\n", $prnt, $logit);
+      unlink("../p1.txt");
+    }
+  }
+  if ($prnt > 0) {
+    $cd2 = "$tcm 2>&1 | tee $rfn";
+  } else {
+    $cd2 = "$tcm 2>&1 > $rfn";
+  }
+  $rv = system($cd2);
+  if ($rv) {
+    print "command: $cd2\n  failed: $?\n";
+    $gsi_reasons .= "  in sys1() after system()\n";
+    $g_sigint = 1;
+    return;
+  }
+  if(!(-f $rfn)) {
+    die "sys1: No $rfn after running command\n";
+  }
+  if ($logit) {
+    $cd2 = "cat $rfn >> $g_logfile";
+    $rv = system($cd2);
+    if ($rv) {
+      print "command: $cd2\n  failed: $?\n";
+      $gsi_reasons .= "  in sys1() after cat\n";
+      $g_sigint = 1;
+      return;
+    }
+  }
+  $t2 = time;
+  if ($logit) {
+    $d14 = &date3($t2, 0);
+    &prt_defer("=-= done:  $d14\n", 0, $logit);
+  }
+  $cd2 = "tail $rfn | grep sys1.result";
+  $res1 = (`$cd2`) + 0;
+  &prt_defer("sys1: got $res1\n\n", $prnt, $logit);
+  if ($res1) {
+    print STDERR "Stopping now because of error $res1\n";
+    print STDERR "  (stderr output is saved in $rfn\n";
+    print STDERR "  and stdout is in ../p1.txt )\n";
+    print "command: $cd2\n  failed: $?\n";
+    $gsi_reasons .= "  in sys1() after tail $rfn\n";
+    $g_sigint = 1;
+    return;
+  }
+  if ("$cmd" =~ m/ss-stdout.txt/) {
+    # Get program's self-measurement
+    $ofile = "ss-stdout.txt";
+    die "No output $ofile\n" if (!(-f $ofile));
+    open($IN, "ss-stdout.txt");
+    $good = 0;
+    while ($l = <$IN>) {
+      chomp $l;
+      if ($l =~ m/^test_function_time: ([-]?[.0-9]+e[-+][0-9]+) *$/) {
+        $good = 1;
+        $sys1_time = ($1) + 0;
+      }
+    }
+    close $IN;
+    die "Did not find time measurement in $ofile\n" if (!($good));
+  }
+
+  # &prt_defer("sys1: got $res1\n\n", $prnt, $logit);
+  die "Stopping now because of error $res1" if ($res1);
+} # End of sys.1
+
+sub census_mhz
+{
+  my($gg, $cn, $p1, $p2, $p3, $p, $f, $fmax);
+  my($IN);
+
+  $p1 = "/sys/devices/system/cpu/cpu";
+  $p2 = "/cpufreq/";
+  if (-f "${p1}0${p2}scaling_cur_freq") {
+    $p3 = "scaling_cur_freq";
+  } else {
+    $p3 = "cpuinfo_cur_freq";
+  }
+
+  $gg = 1;
+  for ($cn=0; $gg; $cn++) {
+    $p = "$p1$cn$p2$p3";
+    if (-f $p) {
+      open($IN, $p); $f=<$IN>; chomp $f; close $IN;
+    } else {
+      $f = 0; $gg = 0;
+    }
+    if ($f > $fmax) { $fmax = $f; }
+  }
+  $f = int(($fmax + 50000)/100000);
+  # print "${f}00 MHz ";
+  return $f;
+} # End of census.mhz
+
+# Plot a histogram (we shift it to avoid empty buckets at the beginning
+# but don't bother to scale width and height)
+sub dump_hist
+{
+  my(@times) = @_;
+  my(@hist); my(@wid);
+  my($n, $lowest, $highest, $toff, $twid);
+  my($t, $buk, $avg, $sumsq, $sdev);
+  my(@bra);
+  my($t14, $OUT, $l);
+  my($widest, $i);
+
+  @hist = (sort {$a <=> $b} @times);
+  @wid = ();
+  $n = $#hist; $lowest = $hist[0]; $highest = $hist[$n];
+  $widest = 0;
+  $toff = int($hist_rez*$lowest);
+  @hist = (); $n = 0; $twid = 0;
+  $avg = 0; $sumsq = 0;
+  foreach $t (sort {$a <=> $b} @times) {
+    $buk = int($hist_rez*$t)-$toff;
+    $hist[$buk] .= '*';
+    $wid[$buk]++;
+    if ($wid[$buk] > $widest) { $widest = $wid[$buk]; }
+    $avg += $t; $sumsq += $t*$t; $n++;
+    if ($buk > $twid) { $twid = $buk; }
+  }
+  $avg /= $n;
+  $sdev = sqrt($sumsq/$n - $avg*$avg);
+  $twid = int($twid/2) + 3;
+
+  # Shrink the height, if needed
+  if ($widest > 64) {
+    for($i=0; $i<=$twid; $i++) {
+      $hist[$i] = "*" x int(($wid[$i] * 64 / $widest) + 0.5);
+    }
+  }
+
+  # Convert to Unicode Braille for easier viewing, and dump to a
+  # file tagged with a timestamp, lowest/avg/highest, etc.
+  @bra = &a2b_graphix('rot1 trim cond', @hist);
+  # Get new width (after condensing)
+  $twid = $g_a2b_out_col;
+  open($OUT, ">> $hist_outpath");
+  $t14 = &date3(time, 0);
+  print $OUT sprintf("%s %s  crc=%08x\n", $t14, "s4", $s4_in_crc);
+  print $OUT sprintf("  runtime=%g +- %g, clock %6.2f MHz\n",
+                                          $avg, $sdev, $hist_avg_mhz);
+  foreach $l (@bra) {
+    print $OUT " $l\n";
+  }
+  print $OUT ("|"  . ("_" x ($twid-2)) . "|\n");
+  print $OUT ($lowest . " N=$n "
+       . (" "x($twid-length("$lowest N=$n $highest"))) . "$highest\n");
+  print $OUT "\n";
+  close $OUT;
+} # End of dump.hist
+
+# Run 40 times, average together the top 25
+sub sys4
+{
+  my($cmd) = @_;
+  my($gg, $i, $n, $frq, $ttime);
+  my($tests);
+  my(@times);
+  my(@hist); my(@bra); my($OUT);
+  my($l, $t14, $lowest, $toff, $t, $buk, $twid, $highest);
+  my($ttime, $tstart);
+  my($prnt);
+
+  $prnt = (!($cmd =~ m|\./ss|));
+  $tests = int(($g_samples * 8) / 5);
+  $tstart = time;
+
+  $s4_valid = 0;
+  $gg = 1; $n = 0; $tmhz = 0;
+  for($i=0; $gg; $i++) {
+    &sys1($cmd, $prnt, 0);
+    if ($g_sigint) {
+      $gsi_reasons .= "  in sys4() after sys1()\n";
+      return;
+    }
+
+    $frq = &census_mhz();
+    if ($g_strict_freq && ($frq > 25)) { die qq`
+Please turn off turbo mode with the command:
+
+  echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
+
+`; } elsif ($g_strict_freq && ($frq > 23)) {
+      # Ignore this one
+    } else {
+      # put this one in the bin
+      $tmhz += $frq;
+      $times[$n++] = $sys1_time;
+      print "  sys.4 measuring, n=$n cpu $s1_bindcpu raw $sys1_time   \r";
+    }
+    $ttime = time - $tstart;
+    if (($n >= $tests) || ($ttime > $s6_max_time)) {
+      # We have enough now
+      $gg = 0;
+    }
+  }
+  print((" " x 78) . "\n");
+
+  $hist_rez = 1000; $hist_avg_mhz = $tmhz*100.0/$n;
+  if ($n >= 20) {
+    &need_dir("hist");
+    $hist_outpath = sprintf("hist/hist-%08x.txt", $s4_in_crc);
+    &dump_hist(@times);  # 1 ms resolution
+
+    &need_dir("hnar");
+    $hist_rez = 500; $hist_outpath = sprintf("hnar/hnar-%08x.txt", $s4_in_crc);
+    &dump_hist(@times);  # narrow plot (2 ms resolution)
+  }
+
+  $ttime = 0;
+  foreach $t (@times) {
+    $ttime += $t;
+    $sumsq += $t*$t;
+    # print "s4: $n $t\n";
+  }
+
+  $s4_time = $ttime / $n;
+  $s4_sdev = sqrt($sumsq/$n - $s4_time*$s4_time);
+  $s4_n = $n;
+  # print "sys.4: returning $s4_time\n";
+  $s4_valid = 1;
+} # End of sys.4
+
+# Make an ordering signature (an array of pairs)
+#  $g_listlen is an implied parameter
+sub os_make
+{
+  my(@vec) = @_;
+  my(@os);
+  my(%t);
+  my($a, $b, $valid, $j);
+
+  # print ("osm1 " . join(" ", @vec) . "\n");
+  $j = 0;
+  $g_ord_subset = ""; $g_subs_len = 0;
+  foreach $b (@vec) {
+    if ($j < $g_listlen) {
+      # This item is a member of the ordered subset we are generating
+      $g_ord_subset .= " $b"; $g_subs_len++;
+      $t{"_,$b"} = 1; # pseudo-pair signifying a present element
+      # print "  $b\n";
+      $valid = 1;
+      foreach $a (@vec) {
+        # print "    $a\n";
+        if ($a eq $b) {
+          # We're on the same element, don't make a "pair" from this, and also
+          # signal that we're done
+          $valid = 0;
+        } elsif ($valid) {
+          # we're still on an earlier element, therefore add the pair (a,b)
+          $t{"$a,$b"} = 1;
+        }
+      }
+    } else {
+      $t{"$b,_"} = 1; # pseudo-pair signifying an absent element
+    }
+    $j++;
+  }
+  $g_ord_subset =~ s/^ //;
+  return (sort (keys %t));
+} # End of os.make
+
+# Given an array of strings, sort them and catenate with ';' separators.
+sub os_stringify
+{
+  my(@vec) = @_;
+  return join(";", (sort (@vec)));
+} # End of os.stringify
+
+# Given two signatures, return their intersection
+sub os_intersect
+{
+  my($str1, $str2) = @_;
+  my(@s1);
+  my(@s2);
+  my(%t);
+  my(%rv);
+  my($k);
+
+  @s1 = split(/;/, $str1);
+  @s2 = split(/;/, $str2);
+  foreach $k (@s1) {
+    $t{$k} = 1;
+    # print "t{$k} = 1\n";
+  }
+  foreach $k (@s2) {
+    # print "  checking t{$k}\n";
+    if ($t{$k}) {
+      # print "    T\n";
+      $rv{$k} = 1;
+    }
+  }
+  return (sort (keys %rv));
+} # End of os.intersect
+
+# Given an ordering signature, look for transitive identities of
+# the type "(a<b) & (b<c) ==> (a<c)" and remove the redundant one
+# (the one that is implied by the other two)
+sub os_detrans
+{
+  my($str1) = @_;
+  my(@s1);
+  my(%t);
+  my(%s);
+  my($k, $a, $b, $c);
+
+  # Unpack the string
+  @s1 = split(/;/, $str1);
+  # Make a hash of all the pairs, and make a hash of all elements
+  # that occur second in a pair
+  foreach $k (@s1) {
+    $t{$k} = 1;
+    if ($k =~ m/^[^,]+,([^,]+)$/) {
+      $b = $1;
+      $s{$b} = 1;
+    } elsif ($k =~ m/^([^-]+)$/) {
+      # Single name, these are OK to ignore
+    } else {
+      die "os.detrans cannot parse |$k|\n";
+    }
+  }
+  foreach $k (@s1) {
+    if ($k =~ m/^([^,]+),([^,]+)$/) {
+      # We have "a<b"
+      $a=$1; $b=$2;
+      foreach $c (keys %s) {
+        if ($t{"$b,$c"}) {
+          # We found a c for which "b<c"
+          if ($t{"$a,$c"}) {
+            # We also have "a<c", which is redundant and can be removed
+            delete $t{"$a,$c"};
+          }
+        }
+      }
+    } else {
+      die "os.detrans cannot parse |$k|\n";
+    }
+  }
+  # All single names will survive, as well any any pairs that did not
+  # get removed by the transitive identity. Return what remains.
+  return &os_stringify((keys %t));
+} # End of os.detrans
+
+sub report1
+{
+  my($crc);
+  $best_avg = 9.9e99;
+  foreach $crc (keys %crc_tn) {
+    $crc_avg{$crc} = $crc_time{$crc}/$crc_tn{$crc};
+    if ($crc_avg{$crc} < $best_avg) {
+      $best_avg = $crc_avg{$crc};
+      $best_crc = $crc;
+    }
+  }
+  $maxN = 0; $minN = 9.9e99;
+  $minpop = 9.9e99;
+  $alldet = '';
+  print " -pop- bin-CRC  d f avgTim (pairwise orderings of optimisation passes, sorted)\n";
+  foreach $crc (sort
+                 {($crc_det{$a} cmp $crc_det{$b}) || ($a <=> $b)}
+                 (keys %crc_tn)
+  ) {
+    print sprintf("%6d %08x %s %s %6.3f %s\n", $crc_pop{$crc}, $crc,
+               ($crc == $first_crc) ? "*" : " ",
+               ($crc == $best_crc) ? ">" : " ",
+               $crc_avg{$crc}, $crc_det{$crc});
+    if ($crc_pop{$crc} < $minpop) { $minpop = $crc_pop{$crc}; }
+    if ($crc_n{$crc} > $maxN) {     $maxN = $crc_n{$crc};     }
+    if ($crc_n{$crc} < $minN) {     $minN = $crc_n{$crc};     }
+    $alldet .= $crc_det{$crc};
+  }
+  if ($minN <= 0) {
+    print " N unknown";
+  } elsif ($minN == $maxN) {
+    print " N=$minN";
+  } else {
+    print " N in [$minN..$maxN]";
+  }
+  print "   (* is default ordering   > is fastest)\n";
+  if ($minpop >= 10) {
+    if ($alldet ne $last_ad) {
+      $ad_crc = &crc32_string($alldet);
+      $last_ad = $alldet;
+      $chg_mp = $minpop;
+    }
+  }
+  $adx = sprintf("%08x", $ad_crc);
+  if ($ad_crc > 0) {
+    print " signature of sorted list of sorted lists of pairwise orderings: $adx\n";
+  }
+  if ($adx eq $g_halt_slsl_sig) {
+    print "Exiting now because target set of CRCs has been found.\n";
+    exit(0);
+  }
+  if ($chg_mp > 0) {
+    print "   (signature last changed at min CRC population: $chg_mp)\n";
+  }
+  if (($minpop > 1) && ($i > 10)) {
+    print sprintf("   Rarest occurs with frequency %9.3e (about 1 in %d)\n",
+      $minpop/$i, int($i/$minpop + 0.5));
+  }
+  print sprintf("  Entropy: %.2f/%.2f with $num_crcs CRCs\n",
+                                              $entropy_avg, $orig_entropy);
+  if (($num_crcs >= $target_crcs)
+   && ($entropy_avg < $orig_entropy/$target_ent_improve)
+  ) {
+    print STDERR "Exiting now because entropy target reached.\n";
+    exit(0);
+  }
+} # End of re.port1
+
+# Given a list, shuffle it and append to the ordering file.
+# The first and last items are never shuffled.
+# $g_do_shuffle tells whether to shuffle (true if nonzero)
+sub add_ordering
+{
+  my(@elems) = @_;
+  my (@fe1); my(@xel); my(@sig);
+  my($nel, $kel, $i, $j, $k, $xn, $to);
+
+  $g_elist = '';
+
+  open($OUT, ">> $ord_file");
+  print $OUT "$o_group:\n";
+  @fe1 = @elems;
+  # Remove the first and last group members (which we don't include
+  # in the shuffling)
+  $ao_fe_first = shift @fe1; $ao_fe_last = pop @fe1;
+  # Add the first group member to the ordering.
+  print $OUT "$ao_fe_first\n";
+  if ($g_do_shuffle) {
+    @xel = (sort {rand()<0.5} @fe1);
+    @fe1 = (sort {rand()<0.5} @xel);
+    @xel = (sort {rand()<0.5} @fe1);
+  } else {
+    @xel = @fe1;
+  }
+  $xn = $#xel+1;
+  if ($n_thisgroup < 6) {
+    print "xel has $xn elements; swap $g_do_shuffle:\n";
+    print "  @xel\n";
+  }
+  # Add the shuffled names to the ordering file
+  $j = 0; $to = "";
+  foreach $e (@xel) {
+    if ($j < $g_listlen) {
+      print $OUT "$e\n";
+      $g_elist .= " $e";
+      $to .= " $e";
+    } else {
+      print $OUT "$e 0\n";
+    }
+    $j++;
+  }
+  if ($n_thisgroup < 6) {
+    $to =~ s/^ //; $tried_orderings{$to}++;
+  }
+  # Add the last group member to the ordering list file.
+  print $OUT "$ao_fe_last\n";
+  close $OUT;
+  @sig = &os_make(@xel);
+  $g_this_sig = &os_stringify(@sig);
+} # End of add.ordering
+
+$| = 1;
+
+$cwd = `pwd`; chomp $cwd;
+if ($cwd =~ m|/([wxyz]-gcc)/build$|) {
+  $z_gcc = $1;
+} elsif ($cwd =~ m|/(gcc9)/build$|) {
+  $z_gcc = $1;
+} else {
+  die "cwd is $cwd, please run this in a directory that ends in .../[wxyz]-gcc/build or .../gcc9/build\n";
+}
+require "../rml-utils1.pl";
+
+$do_make = 0;
+$scr_arg = "";
+$o_group = '';
+$optlevel = "-O3";
+while($arg = shift) {
+  if (&help_arg($arg)) {
+    print $help;
+    exit(0);
+  } elsif ($arg eq '-m') {
+    $do_make = 1;
+  } elsif ($arg eq '-s') {
+    $do_make = 1;
+    $scr_arg = $arg;
+  } elsif ($arg eq "-g") {
+    $o_group = shift;
+  } elsif ($arg eq "-o") {
+    $optlevel = shift;
+    # -Og is to "optimize debugging", -Oz is a stronger form of -Os
+    if (!($optlevel =~ m/^-O[0123gsz]/)) {
+      die "'$optlevel' is not a valid -O option.\n";
+    }
+  }
+}
+
+if (-f $g_logfile) {
+  unlink($g_logfile);
+}
+
+if ($do_make) {
+  &sys1("../make1 $scr_arg -nt", 1, 1);
+}
+
+$Bdir = "$hd/$z_gcc/build/gcc";
+$xgcc = "$Bdir/xgcc";
+
+if (!(-x $xgcc)) {
+  die "There is no executable at '$xgcc' (make failed?)\n";
+}
+
+$ord_file = "$hd/$z_gcc/ordering.txt";
+
+
+$pn_p1 = "../p1.txt";
+$save_p1 = "../save-p1.txt";
+
+$pn_p2 = "../def-ord.txt";
+$save_p2 = "../default-ordering$optlevel.txt";
+
+# First compile it with the standard gcc to find out what the output should be.
+print "Compiling with standard installed gcc...\n";
+unlink("./ss") if (-x "./ss");
+$ol = $optlevel;
+$ol =~ s/Oz/Os/;
+print "gcc $ol s4-testfun.c stream4.c -o ss\n";
+system("gcc", $ol, "s4-testfun.c", "stream4.c", "-o", "ss");
+die "Initial compilation of s4-testfun.c and stream4.c failed.\n" if (!(-x "./ss"));
+open($IN, "./ss |");
+$wantpat = '';
+while ($l = <$IN>) {
+  if ($l =~ m/spent all this time (calculating [-.+e0-9]+)/) {
+    $wantpat = $1;
+    $wantpat =~ s/[+]/./g;
+  }
+}
+if ($wantpat eq '') {
+  die "Could not find expected output pattern in ./ss output\n";
+}
+print "We will be expecting /$wantpat/\n"; # exit(0);
+
+# Now compile with the custom GCC 'xgcc'; verify that it runs and prints
+# the same output; and get the standard ordering of passes in a group.
+print "Compiling with custom xgcc...\n";
+unlink($pn_p2) if (-f $pn_p2);
+$ENV{"RML1_RPT1_PATH"} = $pn_p1;
+print "set ENV{'RML1_RPT1_PATH'} to $ENV{'RML1_RPT1_PATH'}\n";
+$ENV{"RML1_RPT2_PATH"} = $pn_p2;
+print "set ENV{'RML1_RPT2_PATH'} to $ENV{'RML1_RPT2_PATH'}\n";
+unlink("./ss") if (-x "./ss");
+print "$xgcc -B $Bdir $optlevel s4-testfun.c stream4.c -o ss\n";
+system($xgcc, "-B", $Bdir, $optlevel, "s4-testfun.c", "stream4.c", "-o", "ss");
+die "Initial compilation of s4-testfun.c and stream4.c failed.\n" if (!(-x "./ss"));
+open($IN, "./ss |");
+$wp2 = '';
+while ($l = <$IN>) {
+  if ($l =~ m/spent all this time (calculating [-.+e0-9]+)/) {
+    $wp2 = $1;
+    $wp2 =~ s/[+]/./g;
+  }
+}
+if ($wp2 eq '') {
+  die "With xgcc, the program did not print its expected output\n";
+}
+print "With xgcc the program outputs /$wp2/\n"; # exit(0);
+if ($wp2 ne $wantpat) {
+  die "Wrong output from program compiled with xgcc.\n";
+}
+if (!(-f $pn_p2)) {
+  die "Did not get default ordering output\n";
+}
+
+$first_crc = -1;
+
+if ($o_group eq '') {
+  $o_group = "loop"; # "early_optimizations", "loop", or "loop2"
+}
+
+open($IN, $pn_p2);
+$prt = 0; @the_group = ();
+$foundit = 0;
+while($l = <$IN>) {
+  chomp $l;
+  if ($l =~ m/^#/) {
+    # comment - ignore
+  } elsif ($l =~ m/^$o_group:$/) {
+    $prt = 1;
+    $foundit = 1;
+  } elsif ($l =~ m/^[^:]+:$/) {
+    $prt = 0;
+  }
+  $l =~ s/  <$//;
+  if ($prt && ($l ne '')) {
+    print "$l\n";
+    if ($l =~ m/^  ([^ ]+)$/ ) {
+      push @the_group, $1;
+    }
+  }
+}
+close $IN;
+if(!($foundit)) {
+  die "GCC does not have a group '$o_group'\n";
+}
+
+$n1 = $#the_group + 1;
+$orig_entropy = ($n1 * ($n1-1)) / 2;
+
+@pgroup = @the_group;
+
+print (join(';', @pgroup) . "\n");
+$n_thisgroup = $#pgroup+1;
+print "This group has $n_thisgroup elements.\n";
+
+# Now do some tests
+$ad_crc = $chg_mp = 0;
+$gg = 1;
+for ($i=0; $gg; $i++) {
+  print (("=-" x 38) . "=\n");
+
+  # Clear the ordering file
+  if (-f $ord_file) { unlink($ord_file); }
+
+  # Set up parameters for 'loop' group reordering
+  @pgroup = @the_group;
+  $g_do_shuffle = 0; # default
+  if ($i == 0) {
+    # First time, full list
+    $g_do_shuffle = 0;
+    $g_listlen = $#pgroup;
+  } elsif ($g_suggest_len && ($i & 1)) {
+    @pgroup = @g_suggest_vec;
+    $g_do_shuffle = 0;
+    $g_listlen = $g_suggest_len;
+  } else {
+    $g_do_shuffle = 1;
+    if ($g_override_reduceelem ne '') {
+      # Use a reduced group
+      @pgroup = @g_ovr_group;
+      # If list has 10 items, $#list is 9, we want 8
+      $g_listlen = $#pgroup-1;
+    } else {
+      # Use the standard group and choose a well-distributed
+      # group length
+      $r = rand();
+      if ($r > 0.632) {       # (e-1)/e
+        # 1
+        $g_listlen = $#pgroup-1;
+      } elsif ($r > 0.264) {  # (e-2)/e
+        # 1
+        $g_listlen = $#pgroup-2;
+      } elsif ($r > 0.080) {  # (e-2.5)/e
+        # 1/2
+        $g_listlen = $#pgroup-3;
+      } elsif ($r > 0.019) {  # (e-2.6667)/e
+        # 1/6
+        $g_listlen = $#pgroup-4;
+      } else {
+        # 1/24
+        $g_listlen = int(rand($#pgroup-4));
+      }
+    }
+    if ($g_listlen < 0) {
+      $g_listlen = 0;
+    }
+  }
+  # input:
+  #   g_listlen
+  &add_ordering(@pgroup);
+  # returned:
+  #   g_this_sig
+  #   g_elist has been appended
+
+  $el_pop{$g_elist}++;
+  print sprintf("  %4d %4d %s\n", $i, $el_pop{$g_elist}, $g_elist);
+
+  # Print the report here so the scrolling display doesn't jitter
+  print "\n";
+  &report1();
+  print "\n";
+
+  # Remove binaries from last time, if any
+  unlink("./s4f.o") if (-x "./s4f.o");
+  unlink("./ss") if (-x "./ss");
+
+  # Test the ordering feature on a compilation
+  $ENV{"RML1_ORD_PATH"} = $ord_file;
+  &prt_defer("set ENV{'RML1_ORD_PATH'} to $ENV{'RML1_ORD_PATH'}\n", -1);
+
+  $ENV{"RML1_RPT1_PATH"} = $pn_p1;
+  &prt_defer("set ENV{'RML1_RPT1_PATH'} to $ENV{'RML1_RPT1_PATH'}\n", -1);
+
+  $ENV{"RML1_RPT2_PATH"} = $pn_p2;
+  &prt_defer("set ENV{'RML1_RPT2_PATH'} to $ENV{'RML1_RPT2_PATH'}\n", -1);
+
+  if (-f $pn_p1) { unlink($pn_p1); }
+  &sys1("$xgcc $optlevel -B $Bdir -c ./s4-testfun.c -o s4f.o", -1, 0);
+  if ($g_sigint) {
+    $gg = 0;
+    $gsi_reasons .= "  in main loop after xgcc 1\n";
+    goto loop_end;
+  }
+  if (!(-f "./s4f.o")) {
+    &prt_defer('', 1);
+    die "No object s4f.o\n"
+  }
+  if (-f $pn_p1) {
+    rename($pn_p1, $save_p1);
+  }
+  # Save the default tree report
+  if ((-f $pn_p2) && ((-s $pn_p2) > 0) ) {
+    rename($pn_p2, $save_p2);
+  }
+
+  &sys1("$xgcc $optlevel -B $Bdir         stream4.c    s4f.o -o ss", -1, 0);
+  if ($g_sigint) {
+    $gg = 0;
+    $gsi_reasons .= "  in main loop after xgcc 2\n";
+    goto loop_end;
+  }
+  &prt_defer('', 1);
+  if (!(-x "./ss")) {
+    $gg = 0;
+    goto loop_end;
+  }
+
+  # &sys1("ls -l ss", 1, 0);
+  $crc = &path_crc("./s4f.o");
+  $cx = sprintf("%8x", $crc);
+
+  # Set default for non-random suggestion (which is to not suggest anything)
+  $g_suggest_len = 0;
+  @g_suggest_vec = ();
+
+  # Count how many distinct binaries we get; and run each distinct binary
+  # only once
+  $runit = 0;
+  if ($crc_pop{$crc} > 0) {
+    # We got a CRC that we saw before; increase its stats
+    $crc_pop{$crc}++;
+    # See if we have improved on the minimal needed sequence for this CRC
+    if ($g_subs_len < $crc_sm_gen_len{$crc}) {
+      $crc_smallest_generator{$crc} = $g_ord_subset;
+      $crc_sm_gen_len{$crc} = $g_subs_len;
+
+      # Here we also compute our estimate of the total entropy remaining
+      $entropy_total = 0;
+
+      # If this one was the longest of the sm_gen, then there might be a
+      # new holder of that dubious distinction.
+      $worst_sgl_crc = ''; $worst_sgl_len = 0;
+      foreach $kc (keys %crc_sm_gen_len) {
+        my ($kc_len) = $crc_sm_gen_len{$kc};
+        $entropy_total += ($kc_len * ($kc_len-1)) / 2;
+        if ($kc_len > $worst_sgl_len) {
+          $worst_sgl_len = $kc_len;
+          $worst_sgl_crc = $kc;
+        }
+      }
+      $entropy_avg = $entropy_total / $num_crcs;
+    }
+    # Update its signature
+    $old_sig = $crc_sig{$crc};
+    $new_sig = &os_stringify(&os_intersect($old_sig, $g_this_sig));
+    # die "\n  old_sig: $old_sig\n  g_t_sig: $g_this_sig\n  new_sig: $new_sig\n";
+    if ($new_sig eq $old_sig) {
+      # Stagnating canon signature. We can make better use of our time by
+      # exploring something new. This is done by generating a list that we
+      # will use next time pre-empting the normal random search
+# Two possibilities:
+# - If this sig is big enough, we should try harder to reduce it. Suggest
+#   a list that is lacking one item
+# - If this sig is small, instead choose the biggest of the remaining sigs,
+#   and suggest a reduction of whatever was used last time we got that "least
+#   reduced" crc
+# The second strategy seems to include the 1st as a specific case.
+      $x_crc = sprintf("%08x", $crc);
+      $x_wsc = sprintf("%08x", $worst_sgl_crc);
+      $worst_sgl_gen = $crc_smallest_generator{$worst_sgl_crc};
+
+      # If there are any subsets with more than 1 element, we devise a
+      # new group to be used on the next odd iteration, to raise the odds
+      # of reducing the canon signature
+      if ($worst_sgl_len > 1) {
+        my (%used);
+        my ($punt_which) = int(rand() * $worst_sgl_len);
+        my ($item, $i);
+        push(@g_suggest_vec, $ao_fe_first); $used{$ao_fe_first} = 1;
+        $i = 0;
+        foreach $item (split(/ /, $worst_sgl_gen)) {
+          if ($item eq '') {
+          } elsif ($i == $punt_which) {
+          } else {
+            push(@g_suggest_vec, $item); $used{$item} = 1;
+          }
+          $i++;
+        }
+        $used{$ao_fe_last} = 1; # We'll push this one when we're done
+        foreach $item (@the_group) {
+          if (!($used{$item})) {
+            push(@g_suggest_vec, $item);
+          }
+        }
+        push(@g_suggest_vec, $ao_fe_last);
+        $g_suggest_len = $worst_sgl_len-1;
+      }
+
+      if ($g_do_quick_reduction) {
+        print "
+
+we have a stagnated crc ($x_crc):
+  list of passes (ordered subset): $g_ord_subset
+  all pairs: $g_this_sig
+  old_isect:  $old_sig
+  new_isect:  $new_sig
+
+  this crc:  $x_crc
+  smallest for this CRC: $crc_smallest_generator{$crc}
+  len of smallest for this crc: $crc_sm_gen_len{$crc}
+
+  ordered subset: $g_ord_subset
+  subset len: $g_subs_len
+  g_listlen: $g_listlen
+  the_group has $#the_group + 1 items
+
+  worst_sgl_len = $worst_sgl_len
+  worst_sgl_crc = $x_wsc
+  worst_sgl_gen: $worst_sgl_gen
+
+  g_suggest_len: $g_suggest_len
+  g_suggest_vec: (@g_suggest_vec)
+
+";
+      } else {
+        $g_suggest_len = 0;
+      }
+    }
+  } else {
+    # Add a new CRC, init its stats; set flag to actually run (benchmark)
+    $num_crcs++;
+    $crc_pop{$crc} = 1;
+    $crc_smallest_generator{$crc} = $g_ord_subset;
+    $crc_sm_gen_len{$crc} = $g_subs_len;
+    $new_sig = $g_this_sig;
+    $runit = 1;
+    $s4_in_crc = $crc;
+    if ($i == 0) {
+      $first_crc = $crc;
+    }
+  }
+  # Uncomment this to run muliple times (not needed for histogram output,
+  #   for that it is only required that $g_samples be set tp 20 or more)
+  # if ($crc_pop{$crc} <= 25) { $runit = 1; }
+  $crc_sig{$crc} = $new_sig;
+  if ($bin_cksum == 0) {
+    $bin_cksum = $crc;
+  }
+  printf(" %4d %s crc:%8x  (%d distinct CRCs so far)\n\n",
+        $crc_pop{$crc}, (($crc == $bin_cksum) ? 'U' : '.'), $crc, $num_crcs);
+
+  foreach $crc (keys %crc_sig) {
+    $crc_det{$crc} = &os_detrans($crc_sig{$crc});
+  }
+
+  if ($runit) {
+#exit(0) if ($i > 2);
+    # Compile it again to log the output
+    &prt_defer("\n\nNew CRC $cx\n", 0, 1);
+    &sys1("$xgcc $optlevel -B $Bdir  stream4.c  s4f.o -o ss", 0, 1);
+    if ($g_sigint) {
+      $gg = 0;
+      $gsi_reasons .= "  in main loop after xgcc 3\n";
+      goto loop_end;
+    }
+
+    # Get assembly output
+    &prt_defer("Generating assembly for CRC $cx:\n", 0, 1);
+    &sys1("$xgcc $optlevel -B $Bdir s4-testfun.c -S -o asmtemp.s", 1, 1);
+    if ($g_sigint) {
+      $gg = 0;
+      $gsi_reasons .= "  in main loop after xgcc 4\n";
+      goto loop_end;
+    }
+    &sys1("$xgcc $optlevel -B $Bdir  stream4.c  s4f.o -o ss", 0, 1);
+    if ($g_sigint) {
+      $gg = 0;
+      $gsi_reasons .= "  in main loop after xgcc 5\n";
+      goto loop_end;
+    }
+    if(!(-f "asmtemp.s")) {
+      die "no assembly from xgcc s4-testfun.c -S\n";
+    }
+    rename("asmtemp.s", sprintf("asm/asm-%08x.s", $crc));
+
+    &sys4("./ss >ss-stdout.txt 2>&1");
+    if ($g_sigint) {
+      $gg = 0;
+      $gsi_reasons .= "  in main loop after sys4\n";
+      goto loop_end;
+    }
+    if ($s4_valid) {
+      $crc_time{$crc} = $s4_time;
+      $crc_sdev{$crc} = $s4_sdev;
+      $crc_n{$crc} = $s4_n;
+      $crc_tn{$crc}++;
+
+      if (-f $save_p1) {
+        if (!(-d "p1")) {
+          system("mkdir p1");
+        }
+        $rv = system('cp', $save_p1, sprintf("p1/p1-%08x.txt", $crc));
+        if ($rv) {
+          print "cp failed (2): $?\n";
+          $gsi_reasons .= "  in main loop after cp\n";
+          $g_sigint = 1;
+          return;
+        }
+      }
+    }
+
+    $good = 0; $outpt = '';
+    open($IN, "ss-stdout.txt");
+    while ($l = <$IN>) {
+      $outpt .= $l;
+      chomp $l;
+      if ($l =~ m/$wantpat/) {
+        $good = 1;
+      }
+    }
+    close $IN;
+    if (!($good)) {
+      print $outpt;
+      die "./ss did not give expected output /$wantpat/\n";
+    }
+  }
+
+  if ($n_thisgroup < 6) {
+    $nto = 0;
+    foreach $k (sort (keys %tried_orderings)) {
+      print " $tried_orderings{$k} |$k|\n";
+      $nto++;
+    }
+    print "$nto so far\n";
+  }
+
+loop_end: ;
+
+  if ($g_sigint) {
+    $i--;
+    &prt_defer("", 1, 0);
+    print "\n";
+    print (("=" x 76) . "\n");
+    print "Got sigint\n";
+    $gsi_reasons .= "  at main loop end\n";
+    $gg = 0;
+  }
+}
+if ($i < 0) { $i = 0; }
+
+if ($g_sigint) {
+  print $gsi_reasons;
+}
+
+&sys1("ls -l $save_p1", 1, 1);
+
+&sys1("head -15 $save_p1", 1, 1);
+
+print "performed $i successful tests.\n";

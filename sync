@@ -16,7 +16,7 @@ with multiple -with directories in a single command.
 
 `;
 
-$hd = $ENV{"HOME"}; require "$hd/bin/rpmlib.pl";
+$hd = $ENV{"HOME"};
 
 $g_dft_withdir = "$hd/z-gcc";
 $cwd = `pwd`; chomp $cwd;
@@ -27,6 +27,7 @@ if (!($pn_proj =~ m|^$hd/|) {
   die "Run #sync# from the directory containing it.\n";
 }
 $pn_list = "$pn_proj/sync-list.txt";
+require "rml-utils1.pl";
 
 $g_sigint = 0; $gsi_reasons = '';
 $SIG{'INT'} = sub

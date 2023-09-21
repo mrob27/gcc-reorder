@@ -1,0 +1,43 @@
+rm -rf build-x86_64-linux-gnu
+rm -rf build-x86_64-pc-linux-gnu
+rm -rf build-x86_64-redhat-linux
+rm -rf isl
+rm -rf gmp
+rm -rf mpc
+rm -rf mpfr
+rm -rf x86_64-pc-linux-gnu
+rm -rf x86_64-redhat-linux
+rm -rf zlib
+
+rm -rf fixincludes
+rm -rf gcc
+rm -rf intl
+rm -rf libbacktrace
+rm -rf libcc1
+rm -rf libcpp
+rm -rf libdecnumber
+rm -rf libiberty
+rm -rf lto-plugin
+rm -rf prev-fixincludes
+rm -rf prev-gcc
+rm -rf prev-intl
+rm -rf prev-libbacktrace
+rm -rf prev-libcpp
+rm -rf prev-libdecnumber
+rm -rf prev-libiberty
+rm -rf prev-lto-plugin
+rm -rf prev-x86_64-linux-gnu
+rm -rf stage1-fixincludes
+rm -rf stage1-gcc
+rm -rf stage1-intl
+rm -rf stage1-libbacktrace
+rm -rf stage1-libcpp
+rm -rf stage1-libdecnumber
+rm -rf stage1-libiberty
+rm -rf stage1-lto-plugin
+rm -rf stage1-x86_64-linux-gnu
+rm -rf x86_64-linux-gnu
+
+rm -f Makefile compare config.log config.status serdep.tmp stage_current stage_final stage_last
+
+rm -f p1.txt
