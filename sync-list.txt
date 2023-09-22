@@ -1,6 +1,7 @@
 default-withdir: gcc9
 .:
  cfg
+ cfg-darwin
  cfg-fedora35
  cfg-ubuntu20
  clean

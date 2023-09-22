@@ -1,16 +1,15 @@
-# Configuration for building GCC from source in Fedora 35
-# Derived from build logs on koji.fedoraproject.org
-#
-# 20230127 Install into ~/gcc-9; no program-prefix and program-suffix options
-#
+# Configuration for building GCC from source in MacOS High Sierra (Darwin 17)
+# Derived from running "gcc -v" on a 20.04 LTS system
 ../src/configure -v \
-  --build=x86_64-linux-gnu \
-  --disable-bootstrap \
+  --build=x86_64-apple-darwin17 \
   --disable-multilib \
   --enable-checking=release \
   --enable-languages=c,c++,lto \
   --prefix=$HOME/z-gcc \
   --target=x86_64-linux-gnu \
+  --with-as=/opt/local/bin/as \
+  --with-ld=/opt/local/bin/ld \
+  --with-ar=/opt/local/bin/ar \
   --with-bugurl=file:///usr/share/doc/gcc-9/README.Bugs \
   --with-gcc-major-version-only \
   --with-pkgversion='Morobu-9.3.0' \
@@ -18,5 +17,5 @@
   --without-cuda-driver \
   --without-included-gettext
 
-#  --program-prefix=x86_64-linux-gnu- \
+#  --program-prefix=x86_64-apple-darwin17- \
 #  --program-suffix=-9 \

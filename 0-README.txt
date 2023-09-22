@@ -6,10 +6,11 @@ Work notes are in 1-log.txt (not in github)
 
 ====
 
-Initial creation of the GCC source:
+Initial creation of the GCC source (takes 4.346 GiB as of late 2023):
 
   cd
   mkdir z-gcc
+  cd z-gcc
   git clone 'https://github.com/gcc-mirror/gcc.git'
 
 Figure out which version to checkout:
@@ -22,16 +23,17 @@ Get desired version and create build directory:
 
   cd ~/z-gcc/gcc
   git checkout 4212a6a3e44
-  b  # back in ~/z-gcc
+  cd ~/z-gcc
   mv gcc src
   cd src
   ./contrib/download_prerequisites
-  b  # back in ~/z-gcc
+  cd ~/z-gcc
   mkdir build
 
 Get my customisation files:
 
-  g phd ; cd gcc-reorder
+  cd
+  git clone 'https://github.com/mrob27/gcc-reorder'
   ./sync
 
 To do a full build:

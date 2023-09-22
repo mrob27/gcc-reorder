@@ -390,3 +390,24 @@ sub date3
 
   return $l;
 } # End of date3
+
+# Print a prompt and wait for a Y or N answer.
+sub yorn
+{
+  my($prompt) = @_;
+  my($ans);
+
+  $ans = "";
+  while ($ans eq "") {
+    print $prompt;
+    $ans = <>; chomp $ans;
+    $ans =~ tr/A-Z/a-z/;
+    if ($ans =~ m/^y/) {
+      return 1;
+    } elsif ($ans =~ m/^n/) {
+      return 0;
+    }
+    print "Please answer Y or N.\n";
+    $ans = "";
+  }
+} # End of y.orn

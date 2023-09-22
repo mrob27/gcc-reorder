@@ -45,6 +45,8 @@ if ( (-f "/etc/centos-release")
   || (-f "/etc/redhat-release")
 ) {
   $sysvers = "fedora35";
+} elsif (-f "/etc/pf.anchors/com.apple") {
+  $sysvers = "darwin";
 } else {
   $sysvers = "ubuntu20";
 }

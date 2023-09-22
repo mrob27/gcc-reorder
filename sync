@@ -21,13 +21,13 @@ $hd = $ENV{"HOME"};
 $g_dft_withdir = "$hd/z-gcc";
 $cwd = `pwd`; chomp $cwd;
 $pn_proj = $cwd;
-if (!($pn_proj =~ m|^$hd/|) {
+if (!($pn_proj =~ m|^$hd/|)) {
   die "Run #sync# from a directory within $hd\n";
-} elsif (!($pn_proj =~ m|/gcc-reorder$|) {
+} elsif (!($pn_proj =~ m|/gcc-reorder$|)) {
   die "Run #sync# from the directory containing it.\n";
 }
 $pn_list = "$pn_proj/sync-list.txt";
-require "rml-utils1.pl";
+require "./rml-utils1.pl";
 
 $g_sigint = 0; $gsi_reasons = '';
 $SIG{'INT'} = sub
@@ -59,6 +59,8 @@ sub load_manifest
       $ignore{$ln} = $dir;
       $syncdirs{$dir} = 1;
       $ni++;
+    } elsif ($l =~ m|^default-withdir|) {
+      # Ignore (#bmanisync# format)
     } elsif ($l =~ m|^([^ ]+):$|) {
       # Directory
       $dir = $1;
